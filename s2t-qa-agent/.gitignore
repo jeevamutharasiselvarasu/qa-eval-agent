@@ -5,5 +5,3 @@ var/
 __pycache__/
 *.pyc
 .pytest_cache/
-test-results/
-.env.local

@@ -9,8 +9,7 @@
       "module": "uvicorn",
       "args": ["app.main:app", "--port", "${config:s2tqa.apiPort}", "--reload"],
       "cwd": "${workspaceFolder}/backend",
-      "env": { "QA_ENV": "dev", "QA_STORAGE_DIR": "${workspaceFolder}/backend/var/storage" },
-      "envFile": "${workspaceFolder}/.env.local",
+      // Settings come from the project-root .env file (see .env.example); defaults work without one.
       "justMyCode": true
     },
     {

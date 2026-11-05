@@ -1,8 +1,0 @@
-# Offline/locked-down alternative to postgres:16-alpine (same POSTGRES_* environment contract, subset only).
-FROM qa-base:noble
-ENV DEBIAN_FRONTEND=noninteractive PATH=/usr/lib/postgresql/16/bin:$PATH PGDATA=/var/lib/postgresql/data
-RUN apt-get update && apt-get install -y --no-install-recommends postgresql-16 && rm -rf /var/lib/apt/lists/*
-COPY entrypoint-postgres.sh /usr/local/bin/entrypoint-postgres.sh
-RUN chmod +x /usr/local/bin/entrypoint-postgres.sh
-EXPOSE 5432
-ENTRYPOINT ["/usr/local/bin/entrypoint-postgres.sh"]

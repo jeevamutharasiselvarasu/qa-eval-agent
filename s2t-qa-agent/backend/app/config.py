@@ -24,7 +24,8 @@ def _int(name: str, default: int) -> int:
 class Settings:
     env: str = field(default_factory=lambda: os.getenv("QA_ENV", "dev"))
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
-    storage_dir: Path = field(default_factory=lambda: Path(os.getenv("QA_STORAGE_DIR", "./var/storage")).resolve())
+    storage_dir: Path = field(default_factory=lambda: Path(
+        os.getenv("QA_STORAGE_DIR") or Path(__file__).resolve().parents[1] / "var" / "storage").resolve())
 
     # Jira
     jira_mode: str = field(default_factory=lambda: os.getenv("JIRA_MODE", "mock"))  # mock | cloud
@@ -78,11 +79,34 @@ class Settings:
 
 
 _settings: Settings | None = None
+ENV_FILE = Path(__file__).resolve().parents[2] / ".env"  # project root
+
+
+def load_dotenv(path: Path = ENV_FILE) -> None:
+    """Minimal .env loader: KEY=VALUE lines, '#' comments; never overrides variables already set.
+    Skipped in the test environment so tests never pick up local credentials or databases."""
+    if os.getenv("QA_ENV") == "test" or not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key, val = key.strip(), val.strip()
+        if val.startswith("#"):
+            val = ""
+        elif val[:1] in ("'", '"') and val.endswith(val[:1]) and len(val) >= 2:
+            val = val[1:-1]
+        elif " #" in val:
+            val = val.split(" #", 1)[0].rstrip()
+        if key and key not in os.environ:
+            os.environ[key] = val
 
 
 def get_settings() -> Settings:
     global _settings
     if _settings is None:
+        load_dotenv()
         _settings = Settings()
     return _settings
 

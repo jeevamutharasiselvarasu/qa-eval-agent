@@ -116,11 +116,12 @@ def _limits(mem_mb: int, cpu_s: int):
     def apply():  # runs in the child before exec
         import resource
         os.setsid()
-        resource.setrlimit(resource.RLIMIT_AS, (mem_mb * 1024 * 1024, mem_mb * 1024 * 1024))
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu_s, cpu_s + 1))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (2 * 1024 ** 3, 2 * 1024 ** 3))
-        resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        for res, val in ((resource.RLIMIT_AS, mem_mb * 1024 * 1024), (resource.RLIMIT_CPU, cpu_s),
+                         (resource.RLIMIT_FSIZE, 2 * 1024 ** 3), (resource.RLIMIT_NOFILE, 256), (resource.RLIMIT_CORE, 0)):
+            try:  # some platforms (e.g. macOS for RLIMIT_AS) reject individual limits; apply the rest
+                resource.setrlimit(res, (val, val + 1 if res == resource.RLIMIT_CPU else val))
+            except (ValueError, OSError):
+                pass
     return apply
 
 
