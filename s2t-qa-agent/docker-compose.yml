@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: qa_agent
+      POSTGRES_USER: qa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qa_password_change_me}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U qa -d qa_agent"], interval: 5s, retries: 10}
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://qa:${POSTGRES_PASSWORD:-qa_password_change_me}@db:5432/qa_agent
+      QA_STORAGE_DIR: /data/storage
+    ports: ["${APP_PORT:-8000}:8000"]   # host port; set APP_PORT in .env if 8000 is taken
+    volumes: [storage:/data/storage]
+    depends_on: {db: {condition: service_healthy}}
+volumes:
+  pgdata: {}
+  storage: {}

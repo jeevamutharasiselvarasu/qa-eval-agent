@@ -1,0 +1,17 @@
+# Test-runner image: backend + test suite only (no UI). Runs pytest against the separate PostgreSQL service
+# defined in docker-compose.test.yml. The base image can be overridden (see docker/local/ for offline builds).
+ARG PYTHON_IMAGE=python:3.13-slim
+FROM ${PYTHON_IMAGE}
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+COPY backend/requirements.txt backend/requirements.txt
+# Optional build secret "pip_ca": extra CA bundle for TLS-intercepting proxies (used only during this step, not stored).
+RUN --mount=type=secret,id=pip_ca,required=false \
+    if [ -s /run/secrets/pip_ca ]; then export PIP_CERT=/run/secrets/pip_ca; fi; \
+    python -m pip install -r backend/requirements.txt
+COPY backend/ backend/
+COPY sample_data/ sample_data/
+RUN (id -u qa >/dev/null 2>&1 || useradd -m -u 10001 qa) && mkdir -p /results && chown -R qa /app /results
+USER qa
+WORKDIR /app/backend
+CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--junitxml=/results/junit.xml"]

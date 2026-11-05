@@ -1,0 +1,15 @@
+{
+  "_fixture_note": "MOCK Jira fixture used for exploratory testing (second scenario: composite key, inner join lookup, XLSX/JSON sources).",
+  "id": "200077",
+  "summary": "Daily product sales summary",
+  "issue_type": "Story",
+  "status": "In QA",
+  "labels": ["sales"],
+  "components": ["Sales Mart"],
+  "project": {"key": "SALES", "name": "Sales Analytics"},
+  "description": "Build DAILY_SALES from order_lines and products.\n\nAcceptance Criteria\nAC1: SALE_DATE and PRODUCT_CODE together form the business key of DAILY_SALES.\nAC2: PRODUCT_NAME is copied as-is from products.PRODUCT_NAME.\nAC3: Only order lines with QTY > 0 are included.\nAC4: TOTAL_QTY = SUM(QTY) per SALE_DATE, PRODUCT_CODE.\nAC5: GROSS_REVENUE = SUM(QTY * UNIT_PRICE) per SALE_DATE, PRODUCT_CODE, rounded to 2 decimals.\nAC6: INNER JOIN order_lines to products on PRODUCT_CODE.\nAC7: PRODUCT_CODE cannot be null.\n",
+  "custom_fields": {},
+  "comments": [],
+  "attachments": [],
+  "links": []
+}

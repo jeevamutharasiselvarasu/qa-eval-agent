@@ -1,0 +1,146 @@
+[
+ {
+  "ORDER_ID": 5001,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-01",
+  "PRODUCT_CODE": "P-200",
+  "QTY": 5,
+  "UNIT_PRICE": 29.49
+ },
+ {
+  "ORDER_ID": 5002,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-01",
+  "PRODUCT_CODE": "P-300",
+  "QTY": 5,
+  "UNIT_PRICE": 26.332
+ },
+ {
+  "ORDER_ID": 5003,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-01",
+  "PRODUCT_CODE": "P-999",
+  "QTY": 0,
+  "UNIT_PRICE": 32.252
+ },
+ {
+  "ORDER_ID": 5004,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-01",
+  "PRODUCT_CODE": "P-400",
+  "QTY": 2,
+  "UNIT_PRICE": 29.785
+ },
+ {
+  "ORDER_ID": 5005,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-01",
+  "PRODUCT_CODE": "P-200",
+  "QTY": -1,
+  "UNIT_PRICE": 26.162
+ },
+ {
+  "ORDER_ID": 5006,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-01",
+  "PRODUCT_CODE": "P-999",
+  "QTY": 3,
+  "UNIT_PRICE": 22.871
+ },
+ {
+  "ORDER_ID": 5007,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-02",
+  "PRODUCT_CODE": "P-200",
+  "QTY": 1,
+  "UNIT_PRICE": 33.569
+ },
+ {
+  "ORDER_ID": 5008,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-02",
+  "PRODUCT_CODE": "P-999",
+  "QTY": 3,
+  "UNIT_PRICE": 38.356
+ },
+ {
+  "ORDER_ID": 5009,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-02",
+  "PRODUCT_CODE": "P-100",
+  "QTY": 1,
+  "UNIT_PRICE": 39.12
+ },
+ {
+  "ORDER_ID": 5010,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-02",
+  "PRODUCT_CODE": "P-999",
+  "QTY": 0,
+  "UNIT_PRICE": 18.557
+ },
+ {
+  "ORDER_ID": 5011,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-02",
+  "PRODUCT_CODE": "P-100",
+  "QTY": 2,
+  "UNIT_PRICE": 26.274
+ },
+ {
+  "ORDER_ID": 5012,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-02",
+  "PRODUCT_CODE": "P-400",
+  "QTY": -1,
+  "UNIT_PRICE": 40.465
+ },
+ {
+  "ORDER_ID": 5013,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-03",
+  "PRODUCT_CODE": "P-400",
+  "QTY": 3,
+  "UNIT_PRICE": 37.766
+ },
+ {
+  "ORDER_ID": 5014,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-03",
+  "PRODUCT_CODE": "P-999",
+  "QTY": 3,
+  "UNIT_PRICE": 48.384
+ },
+ {
+  "ORDER_ID": 5015,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-03",
+  "PRODUCT_CODE": "P-200",
+  "QTY": 2,
+  "UNIT_PRICE": 9.385
+ },
+ {
+  "ORDER_ID": 5016,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-03",
+  "PRODUCT_CODE": "P-200",
+  "QTY": 3,
+  "UNIT_PRICE": 14.764
+ },
+ {
+  "ORDER_ID": 5017,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-03",
+  "PRODUCT_CODE": "P-400",
+  "QTY": -1,
+  "UNIT_PRICE": 43.485
+ },
+ {
+  "ORDER_ID": 5018,
+  "LINE_NO": 1,
+  "SALE_DATE": "2026-10-03",
+  "PRODUCT_CODE": "P-400",
+  "QTY": 5,
+  "UNIT_PRICE": 42.506
+ }
+]

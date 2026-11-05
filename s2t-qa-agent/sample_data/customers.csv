@@ -1,0 +1,11 @@
+CUSTOMER_ID,CUSTOMER_NAME,SEGMENT,EMAIL
+C101,  Asha Rao ,RETAIL,asha.rao@example.com
+C102,vikram singh,CORPORATE,vikram@example.com
+C103,Meena Iyer,RETAIL,meena@example.com
+C104, rahul DAS,SME,rahul@example.com
+C105,Anita Kapoor ,RETAIL,anita@example.com
+C106,Joseph Thomas,CORPORATE,joseph@example.com
+C107,Lakshmi N,SME,lakshmi@example.com
+C108,Farhan Ali,RETAIL,farhan@example.com
+C109,Divya Menon,RETAIL,divya@example.com
+C110,Karthik S,SME,karthik@example.com
