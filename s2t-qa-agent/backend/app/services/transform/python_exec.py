@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -105,7 +106,13 @@ def validate_python(code: str) -> tuple[list[ExecError], list[str]]:
     return errors, warnings
 
 
+IS_WINDOWS = os.name == "nt"
+
+
 def _limits(mem_mb: int, cpu_s: int):
+    if IS_WINDOWS:  # no rlimits/setsid on Windows: only the wall-clock timeout + kill apply (see README)
+        return None
+
     def apply():  # runs in the child before exec
         import resource
         os.setsid()
@@ -131,8 +138,10 @@ def execute_python(code: str, inputs: dict[str, Path], output_path: Path, *, lim
         tmp_out = Path(td) / "out.parquet"
         job.write_text(json.dumps({"code": code, "inputs": {k: str(v) for k, v in inputs.items()},
                                    "output": str(tmp_out), "result": str(result), "limit": limit}))
-        env = {"PATH": "/usr/bin:/bin", "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
+        env = {"PATH": os.defpath, "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
                "PYTHONDONTWRITEBYTECODE": "1", "HOME": td, "TMPDIR": td}
+        if IS_WINDOWS:  # Python on Windows needs SYSTEMROOT to start; TEMP/TMP point at the job dir
+            env.update({"SYSTEMROOT": os.environ.get("SYSTEMROOT", r"C:\Windows"), "TEMP": td, "TMP": td})
         t0 = time.perf_counter()
         proc = subprocess.Popen([sys.executable, "-I", "-S", str(WORKER), str(job)], cwd=td, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
@@ -140,7 +149,10 @@ def execute_python(code: str, inputs: dict[str, Path], output_path: Path, *, lim
         try:
             out, err = proc.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            if IS_WINDOWS:
+                proc.kill()
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
             proc.communicate()
             return [ExecError(f"Python transformation exceeded the {timeout_s}s execution limit and was killed", kind="TIMEOUT")], [], 0, [], warnings
         dur = int((time.perf_counter() - t0) * 1000)
@@ -148,7 +160,8 @@ def execute_python(code: str, inputs: dict[str, Path], output_path: Path, *, lim
         if not result.exists():
             tail = err.decode("utf-8", "replace")[-1500:]
             msg = "Python worker terminated abnormally"
-            if proc.returncode in (-signal.SIGKILL, -signal.SIGXCPU) or "MemoryError" in tail:
+            killed = {-signal.SIGKILL, -getattr(signal, "SIGXCPU", 24)} if not IS_WINDOWS else set()
+            if proc.returncode in killed or "MemoryError" in tail:
                 msg += " (resource limit exceeded: memory or CPU)"
             return [ExecError(f"{msg}. {tail.strip().splitlines()[-1] if tail.strip() else ''}", kind="RUNTIME")], logs, 0, [], warnings
         res = json.loads(result.read_text())
@@ -156,5 +169,5 @@ def execute_python(code: str, inputs: dict[str, Path], output_path: Path, *, lim
         if res.get("error"):
             e = res["error"]
             return [ExecError(e["message"], e.get("line"), None, e.get("kind", "RUNTIME"))], logs, 0, [], warnings + res.get("warnings", [])
-        os.replace(tmp_out, output_path)
+        shutil.move(str(tmp_out), str(output_path))  # works across drives (os.replace does not)
         return [], logs, res["row_count"], res["schema"], warnings + res.get("warnings", [])

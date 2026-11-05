@@ -53,6 +53,21 @@ Synthetic testing also finds a real defect in the AI-drafted transformation. A N
 flows through to the target, which violates AC1 ("cannot be null"). The NEGATIVE_RESULT and NULL_VALUES scenarios
 stay **BLOCKED** until their gaps are clarified.
 
+### VS Code on Windows (no Docker)
+
+Prerequisites: **Python 3.11+** (3.13 recommended, from python.org, tick "Add to PATH"), **Node.js 20+**, and VS Code with the
+Python extension. The `.vscode/` folder holds ready-made tasks and launch configurations.
+
+1. *File → Open Folder…* and choose `s2t-qa-agent`.
+2. *Terminal → Run Task… → **Setup: install everything***. This creates `backend\.venv` and runs `npm install`.
+   When asked, select the `.venv` interpreter.
+3. *Run and Debug* (Ctrl+Shift+D) → **Full stack (backend + UI)** → F5. Then open http://localhost:5173.
+   Ports are set in `.vscode/settings.json` (`s2tqa.apiPort` defaults to 18080, `s2tqa.uiPort` to 5173).
+4. Tests: use the Testing panel (beaker icon), or *Run Task… → Run tests*.
+
+On native Windows, the Python-transformation sandbox keeps the AST policy, the audit hook and the wall-clock timeout,
+but **memory and CPU limits are not enforced** (Linux rlimits don't exist on Windows). Use Linux/WSL/Docker when you need those.
+
 ### Docker Compose (PostgreSQL)
 
 ```bash

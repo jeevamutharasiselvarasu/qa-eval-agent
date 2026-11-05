@@ -1,4 +1,5 @@
 """Transformation engine: SQL/Python safety, limits, visual compilation and mode equivalence."""
+import os
 from pathlib import Path
 
 import duckdb
@@ -113,8 +114,9 @@ def test_python_runtime_errors_timeout_memory_and_contract(inputs, tmp_path):
     assert e[0].kind == "RUNTIME" and e[0].line == 3
     e, *_ = execute_python("def transform(s):\n    while True:\n        pass\n", inputs, out, timeout_s=2)
     assert e[0].kind == "TIMEOUT"
-    e, *_ = execute_python("import numpy as np\ndef transform(s):\n    return np.ones((40000, 40000))\n", inputs, out)
-    assert e and ("MemoryError" in e[0].message or "resource limit" in e[0].message)
+    if os.name != "nt":  # memory rlimits are not available on Windows (wall-clock timeout only)
+        e, *_ = execute_python("import numpy as np\ndef transform(s):\n    return np.ones((40000, 40000))\n", inputs, out)
+        assert e and ("MemoryError" in e[0].message or "resource limit" in e[0].message)
     e, *_ = execute_python("def transform(s):\n    return 42\n", inputs, out)
     assert e[0].kind == "CONTRACT"
 

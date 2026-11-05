@@ -1,0 +1,38 @@
+{
+  // Terminal > Run Task...  Run "Setup: install everything" once.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Setup: backend venv + packages",
+      "type": "shell",
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "windows": { "command": "py -3 -m venv .venv; .\\.venv\\Scripts\\python -m pip install --upgrade pip; .\\.venv\\Scripts\\python -m pip install -r requirements.txt" },
+      "linux": { "command": "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" },
+      "osx": { "command": "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Setup: frontend packages",
+      "type": "shell",
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "command": "npm install",
+      "problemMatcher": []
+    },
+    {
+      "label": "Setup: install everything",
+      "dependsOn": ["Setup: backend venv + packages", "Setup: frontend packages"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run tests",
+      "type": "shell",
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "windows": { "command": ".\\.venv\\Scripts\\python -m pytest -q -p no:cacheprovider" },
+      "linux": { "command": ".venv/bin/python -m pytest -q -p no:cacheprovider" },
+      "osx": { "command": ".venv/bin/python -m pytest -q -p no:cacheprovider" },
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

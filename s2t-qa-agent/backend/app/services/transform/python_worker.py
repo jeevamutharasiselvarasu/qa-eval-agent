@@ -42,7 +42,9 @@ def main(job_path: str) -> None:
     sources = {}
     for alias, path in job["inputs"].items():
         sources[alias] = pq.read_table(path).to_pandas()
-    lib_roots = tuple(p.rstrip("/") + "/" for p in sys.path if p and p.startswith("/"))
+    import os
+    norm = lambda p: os.path.normcase(os.path.abspath(p))  # noqa: E731 - case/separator-insensitive on Windows
+    lib_roots = tuple(norm(p).rstrip(os.sep) + os.sep for p in sys.path if p and os.path.isabs(p))
     phase = ["user"]
 
     def hook(event, args):
@@ -50,7 +52,7 @@ def main(job_path: str) -> None:
             return
         if event == "open":
             path, mode = str(args[0]), str(args[1] or "r")
-            if any(c in mode for c in "wax+") or not path.startswith(lib_roots):
+            if any(c in mode for c in "wax+") or not norm(path).startswith(lib_roots):
                 raise PermissionError(f"File access is not permitted in transformations: {path}")
         elif event.startswith(("socket.", "subprocess.", "os.system", "os.exec", "os.spawn", "os.fork", "os.posix_spawn",
                                "os.kill", "os.remove", "os.rename", "os.mkdir", "os.rmdir", "shutil.", "ctypes.",

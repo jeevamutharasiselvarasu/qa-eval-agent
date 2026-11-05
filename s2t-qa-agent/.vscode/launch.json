@@ -1,0 +1,39 @@
+{
+  // Run and Debug panel: pick "Full stack (backend + UI)" and press F5.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend (FastAPI)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["app.main:app", "--port", "${config:s2tqa.apiPort}", "--reload"],
+      "cwd": "${workspaceFolder}/backend",
+      "env": { "QA_ENV": "dev", "QA_STORAGE_DIR": "${workspaceFolder}/backend/var/storage" },
+      "envFile": "${workspaceFolder}/.env.local",
+      "justMyCode": true
+    },
+    {
+      "name": "Frontend (Vite)",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "env": { "API_PORT": "${config:s2tqa.apiPort}", "UI_PORT": "${config:s2tqa.uiPort}" },
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Tests (pytest)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-q", "-p", "no:cacheprovider"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal"
+    }
+  ],
+  "compounds": [
+    { "name": "Full stack (backend + UI)", "configurations": ["Backend (FastAPI)", "Frontend (Vite)"], "stopAll": true }
+  ]
+}

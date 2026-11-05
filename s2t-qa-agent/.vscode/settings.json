@@ -1,0 +1,12 @@
+{
+  // Change these if the ports are already in use on your machine.
+  "s2tqa.apiPort": "18080",
+  "s2tqa.uiPort": "5173",
+
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.cwd": "${workspaceFolder}/backend",
+  "python.testing.pytestArgs": ["tests", "-p", "no:cacheprovider"],
+  "files.exclude": { "**/__pycache__": true, "frontend/node_modules": true }
+}
