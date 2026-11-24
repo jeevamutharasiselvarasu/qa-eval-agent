@@ -102,16 +102,8 @@ def decide(db: Session, run_id: str, kind: str, decision: str, reviewer: str, re
     h = sha256_obj(content)
     if expected_hash and expected_hash != h:
         raise ValueError("The artifact changed since you loaded it; reload and review again")
-    if kind == "REQUIREMENTS" and decision == "APPROVED":
-        pending_ai = db.scalars(select(Requirement).where(Requirement.run_id == run_id, Requirement.provenance == "AI_INFERRED",
-                                                          Requirement.status == "PROPOSED")).all()
-        if pending_ai:
-            raise ValueError(f"{len(pending_ai)} AI-inferred requirement(s) must be accepted or rejected before approval")
-    if kind == "MAPPINGS" and decision == "APPROVED":
-        pending = db.scalars(select(ColumnMapping).where(ColumnMapping.run_id == run_id, ColumnMapping.status == "PROPOSED",
-                                                         ColumnMapping.mapping_type != "UNMAPPED_SOURCE")).all()
-        if pending:
-            raise ValueError(f"{len(pending)} proposed mapping(s) must be accepted or rejected before approval")
+    # Undecided AI-inferred requirements and proposed mappings no longer block approval: they are simply not used
+    # (only ACCEPTED items feed mappings, transformations and tests). The review screen lists them as "not used".
     a = Approval(run_id=run_id, artifact_type=kind, artifact_id=aid, artifact_version=aver, content_hash=h,
                  decision=decision, reviewer=reviewer, reason=reason)
     db.add(a)

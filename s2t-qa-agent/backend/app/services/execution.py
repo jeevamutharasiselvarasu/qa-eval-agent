@@ -32,6 +32,11 @@ class ExecutionError(Exception):
         self.status = status
 
 
+def selected_ids(db: Session, run: QARun, track: str) -> list[str]:
+    return sorted(t.id for t in db.scalars(select(TestCase).where(TestCase.run_id == run.id, TestCase.track == track))
+                  if t.selected is not False)
+
+
 def idempotency_key(db: Session, run: QARun, track: str) -> str:
     st = approval_state(db, run.id)
     v = current_version(db, run.id)
@@ -42,6 +47,7 @@ def idempotency_key(db: Session, run: QARun, track: str) -> str:
              "mappings": st["MAPPINGS"]["current_hash"], "reqs": st["REQUIREMENTS"]["current_hash"]}
     if track == "SYNTHETIC":
         parts["synthetic"] = st["SYNTHETIC_DATA"]["current_hash"]
+    parts["selected"] = selected_ids(db, run, track)
     return sha256_obj(parts)
 
 
@@ -54,6 +60,9 @@ def start(db: Session, run: QARun, track: str, actor: str, force: bool = False) 
         raise ExecutionError("Execution requires current approvals. Not approved: " + "; ".join(missing))
     if track == "ACTUAL" and not db.scalars(select(Dataset).where(Dataset.run_id == run.id, Dataset.role == "TARGET")).first():
         raise ExecutionError("Upload the target dataset first", 400)
+    chosen = selected_ids(db, run, track)
+    if not chosen:
+        raise ExecutionError(f"No test cases of the {'uploaded-data' if track == 'ACTUAL' else 'synthetic'} track are selected", 400)
     key = idempotency_key(db, run, track)
     running = db.scalars(select(Execution).where(Execution.run_id == run.id, Execution.track == track,
                                                  Execution.status.in_(["QUEUED", "RUNNING"]))).first()
@@ -66,7 +75,7 @@ def start(db: Session, run: QARun, track: str, actor: str, force: bool = False) 
         return done, True
     v = current_version(db, run.id)
     ex = Execution(run_id=run.id, track=track, status="QUEUED", idempotency_key=key, transformation_version_id=v.id,
-                   settings=dict(run.settings or {}), started_by=actor,
+                   settings=dict(run.settings or {}), started_by=actor, selected_test_ids=chosen,
                    input_fingerprints={d.alias + ":" + d.role: d.fingerprint for d in db.scalars(select(Dataset).where(
                        Dataset.run_id == run.id, Dataset.role.in_(["SOURCE", "TARGET"])))})
     db.add(ex)
@@ -201,9 +210,12 @@ def run_execution(execution_id: str) -> None:
             set_state(db, run, "VALIDATION_IN_PROGRESS", actor)
             db.commit()
             tcs = list(db.scalars(select(TestCase).where(TestCase.run_id == run.id, TestCase.track == ex.track).order_by(TestCase.id)))
+            if ex.selected_test_ids is not None:  # only the test cases chosen for this run
+                chosen = set(ex.selected_test_ids)
+                tcs = [t for t in tcs if t.id in chosen]
             done = {r.test_case_id for r in db.scalars(select(TestResult).where(TestResult.execution_id == ex.id))}
             open_gaps = {g.id for g in db.scalars(select(RequirementGap).where(RequirementGap.run_id == run.id,
-                                                                                RequirementGap.status.in_(["OPEN", "BLOCKED"])))}
+                                                                                RequirementGap.status.in_(["OPEN", "BLOCKED", "ACCEPTED_LIMITATION"])))}
             max_rows = int((ex.settings or {}).get("max_evidence_rows", 200))
             todo = []
             for tc in tcs:
@@ -253,6 +265,8 @@ def run_execution(execution_id: str) -> None:
             record_error(db, run.id, "EXECUTION", msg, traceback.format_exc(), ex.id)
             stored = {r.test_case_id for r in db.scalars(select(TestResult).where(TestResult.execution_id == ex.id))}
             for tc in db.scalars(select(TestCase).where(TestCase.run_id == run.id, TestCase.track == ex.track)):
+                if ex.selected_test_ids is not None and tc.id not in ex.selected_test_ids:
+                    continue
                 if tc.id not in stored:
                     db.add(TestResult(execution_id=ex.id, test_case_id=tc.id, status="NOT_EXECUTED",
                                       message="Not executed: " + msg[:300]))

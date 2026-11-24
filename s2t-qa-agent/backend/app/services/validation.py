@@ -174,8 +174,9 @@ def check_not_null(ctx: ValidationContext, spec: dict) -> CheckOutcome:
 
 
 def _recon(ctx: ValidationContext, spec: dict, direction: str) -> CheckOutcome:
-    ek, ak = _keys(ctx, spec, "expected"), _keys(ctx, spec, "actual")
-    src, other, sk, ok_ = ("expected", "actual", ek, ak) if direction == "missing" else ("actual", "expected", ak, ek)
+    E = spec.get("expected_table", "expected")
+    ek, ak = _keys(ctx, spec, E), _keys(ctx, spec, "actual")
+    src, other, sk, ok_ = (E, "actual", ek, ak) if direction == "missing" else ("actual", E, ak, ek)
     cond = _key_join(sk, ok_, "s", "o")
     base = f"FROM {src} s WHERE NOT EXISTS (SELECT 1 FROM {other} o WHERE {cond})"
     n = ctx.one(f"SELECT COUNT(*) {base}")[0]
@@ -186,17 +187,18 @@ def _recon(ctx: ValidationContext, spec: dict, direction: str) -> CheckOutcome:
 
 
 def check_column_match(ctx: ValidationContext, spec: dict) -> CheckOutcome:
-    ek, ak = _keys(ctx, spec, "expected"), _keys(ctx, spec, "actual")
-    ec, ac = ctx.col("expected", spec["column"]), ctx.col("actual", spec["column"])
+    E = spec.get("expected_table", "expected")
+    ek, ak = _keys(ctx, spec, E), _keys(ctx, spec, "actual")
+    ec, ac = ctx.col(E, spec["column"]), ctx.col("actual", spec["column"])
     if not ec:
         raise CheckError(f"Column {spec['column']} is not produced by the approved transformation")
     if not ac:
         return CheckOutcome("FAIL", spec["column"], "column missing", f"Column {spec['column']} is missing from the uploaded target",
                             {"missing_column": True})
-    fam = _family(ctx.cols("expected")[ec])
+    fam = _family(ctx.cols(E)[ec])
     ekl, akl = ", ".join(q(k) for k in ek), ", ".join(q(k) for k in ak)
-    eu = f"(SELECT * FROM expected WHERE ({ekl}) IN (SELECT ({ekl}) FROM expected GROUP BY ALL HAVING COUNT(*) = 1))" if len(ek) > 1 else \
-        f"(SELECT * FROM expected WHERE {q(ek[0])} IN (SELECT {q(ek[0])} FROM expected GROUP BY 1 HAVING COUNT(*) = 1))"
+    eu = f"(SELECT * FROM {E} WHERE ({ekl}) IN (SELECT ({ekl}) FROM {E} GROUP BY ALL HAVING COUNT(*) = 1))" if len(ek) > 1 else \
+        f"(SELECT * FROM {E} WHERE {q(ek[0])} IN (SELECT {q(ek[0])} FROM {E} GROUP BY 1 HAVING COUNT(*) = 1))"
     au = f"(SELECT * FROM actual WHERE ({akl}) IN (SELECT ({akl}) FROM actual GROUP BY ALL HAVING COUNT(*) = 1))" if len(ak) > 1 else \
         f"(SELECT * FROM actual WHERE {q(ak[0])} IN (SELECT {q(ak[0])} FROM actual GROUP BY 1 HAVING COUNT(*) = 1))"
     tol = float(spec.get("tolerance") or 0.0)
@@ -221,11 +223,11 @@ def check_column_match(ctx: ValidationContext, spec: dict) -> CheckOutcome:
     join = f"FROM {eu} e JOIN {au} a ON {_key_join(ek, ak)}"
     compared = ctx.one(f"SELECT COUNT(*) {join}")[0]
     n = ctx.one(f"SELECT COUNT(*) {join} WHERE {mismatch}")[0]
-    dup_excl = ctx.one(f"SELECT (SELECT COUNT(*) FROM expected) - (SELECT COUNT(*) FROM {eu})")[0]
+    dup_excl = ctx.one(f"SELECT (SELECT COUNT(*) FROM {E}) - (SELECT COUNT(*) FROM {eu})")[0]
     keysel = ", ".join(f"e.{q(k)} AS {q(k)}" for k in ek)
     names, rows = ctx.rows(f"SELECT {keysel}, {lit(ec)} AS column_name, {ev} AS expected, {av} AS actual, {diff} AS difference "
                            f"{join} WHERE {mismatch} ORDER BY ALL LIMIT {ctx.max_rows}")
-    exp_rows = ctx.one("SELECT COUNT(*) FROM expected")[0]
+    exp_rows = ctx.one(f"SELECT COUNT(*) FROM {E}")[0]
     metrics = {"compared": compared, "mismatches": n, "tolerance": tol, "family": fam, "duplicate_key_rows_excluded": dup_excl}
     if compared == 0 and exp_rows > 0:
         return CheckOutcome("BLOCKED", "", "", "No records with matching unique keys to compare", metrics)
@@ -326,11 +328,124 @@ def check_predicate(ctx: ValidationContext, spec: dict) -> CheckOutcome:
                         "Rule holds for all rows" if n == 0 else f"{n} row(s) violate the rule", {"violations": n}, names, rows)
 
 
+PROPERTY_SQL = {  # property: (violation predicate, what every value must be)
+    "UPPER": ("{v} IS NOT NULL AND {v} <> UPPER({v})", "upper-case"),
+    "LOWER": ("{v} IS NOT NULL AND {v} <> LOWER({v})", "lower-case"),
+    "TRIMMED": ("{v} IS NOT NULL AND {v} <> TRIM({v})", "free of leading/trailing spaces"),
+    "MAX_DECIMALS": ("{c} IS NOT NULL AND ABS(TRY_CAST({c} AS DOUBLE) - ROUND(TRY_CAST({c} AS DOUBLE), {a})) > 1e-9",
+                     "rounded to at most {a} decimal place(s)"),
+    "NOT_NULL": ("{c} IS NULL", "non-null"),
+    "NON_NEGATIVE": ("TRY_CAST({c} AS DOUBLE) < 0", "0 or more"),
+    "NON_NEGATIVE_INTEGER": ("{c} IS NULL OR TRY_CAST({c} AS DOUBLE) < 0 OR TRY_CAST({c} AS DOUBLE) <> FLOOR(TRY_CAST({c} AS DOUBLE))",
+                             "whole numbers of 0 or more"),
+    "MAX_LENGTH": ("LENGTH({v}) > {a}", "at most {a} characters long"),
+}
+
+
+def check_value_property(ctx: ValidationContext, spec: dict) -> CheckOutcome:
+    """A property every value must have because of the transformation logic (UPPER, TRIM, ROUND(x, n), COALESCE, ...)."""
+    t = spec.get("table", "actual")
+    c = ctx.col(t, spec["column"])
+    if not c:
+        raise CheckError(f"Column {spec['column']} not found in {t}")
+    prop, a = spec["property"], spec.get("arg")
+    v = f"CAST({q(c)} AS VARCHAR)"
+    if prop == "ALLOWED_VALUES":
+        vals = ", ".join(lit(str(x)) for x in a)
+        pred = f"{q(c)} IS NULL" if not spec.get("allow_null") else "FALSE"
+        pred = f"({pred}) OR ({q(c)} IS NOT NULL AND {v} NOT IN ({vals}))"
+        what = "one of " + ", ".join(str(x) for x in a) + (" (or NULL)" if spec.get("allow_null") else "")
+    elif prop in PROPERTY_SQL:
+        tmpl, what = PROPERTY_SQL[prop]
+        pred = tmpl.format(c=q(c), v=v, a=int(a or 0))
+        what = what.format(a=a)
+    else:
+        raise CheckError(f"Unknown property {prop}")
+    n = ctx.one(f"SELECT COUNT(*) FROM {q(t)} WHERE {pred}")[0]
+    total = ctx.one(f"SELECT COUNT(*) FROM {q(t)}")[0]
+    names, rows = ctx.rows(f"SELECT * FROM {q(t)} WHERE {pred} LIMIT {ctx.max_rows}")
+    return CheckOutcome("PASS" if n == 0 else "FAIL", f"all {c} values {what}", f"{n} violation(s)",
+                        f"All {total} values of {c} are {what}" if n == 0 else f"{n} of {total} values of {c} break the rule (must be {what})",
+                        {"violations": n, "rows": total, "property": prop}, names, rows)
+
+
+def check_key_subset(ctx: ValidationContext, spec: dict) -> CheckOutcome:
+    """Every key in `table` must come from the source records the logic allows (e.g. INNER JOIN matches, filtered rows)."""
+    t = spec.get("table", "actual")
+    k = ctx.col(t, spec["key"])
+    if not k:
+        raise CheckError(f"Key column {spec['key']} not found in {t}")
+    src = spec["source_sql"]
+    sql = f"FROM {q(t)} x WHERE x.{q(k)} IS NOT NULL AND x.{q(k)} NOT IN (SELECT * FROM ({src}) s WHERE s IS NOT NULL)"
+    try:
+        n = ctx.one(f"SELECT COUNT(*) {sql}")[0]
+    except duckdb.Error as e:
+        raise CheckError(f"Could not evaluate the source records: {e}") from e
+    names, rows = ctx.rows(f"SELECT x.* {sql} LIMIT {ctx.max_rows}")
+    return CheckOutcome("PASS" if n == 0 else "FAIL", f"only {spec.get('source_desc', 'allowed records')}", f"{n} other record(s)",
+                        "Every record comes from " + spec.get("source_desc", "the allowed source records") if n == 0 else
+                        f"{n} record(s) do not come from {spec.get('source_desc', 'the allowed source records')}",
+                        {"violations": n}, names, rows)
+
+
+def check_rule_oracle(ctx: ValidationContext, spec: dict) -> CheckOutcome:
+    """Compare the transformation output with an independent 'rule oracle': the approved mapping rules for the
+    listed columns, compiled separately and evaluated directly on the scenario's source data."""
+    from .transform.sql_exec import validate_sql
+    sql = spec.get("oracle_sql") or ""
+    allowed = {t for t in ctx.con.execute("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() for t in t if t.startswith("src_")}
+    errs, _, _ = validate_sql(sql, allowed)
+    if errs:
+        raise CheckError("Rule oracle failed safety validation: " + "; ".join(e.message for e in errs[:3]))
+    try:
+        ctx.con.execute(f"CREATE OR REPLACE TEMP VIEW oracle AS {sql}")
+    except duckdb.Error as e:
+        raise CheckError(f"Rule oracle could not be evaluated: {str(e).splitlines()[0]}") from e
+    ctx._cols.pop("oracle", None)
+    base = {**spec, "expected_table": "oracle"}
+    if spec.get("rows"):
+        m = _recon(ctx, base, "missing")
+        x = _recon(ctx, base, "extra")
+        n_o = ctx.one("SELECT COUNT(*) FROM oracle")[0]
+        bad = m.metrics["count"] + x.metrics["count"]
+        rows = [{"issue": "EXPECTED_BY_RULE_BUT_MISSING", **r} for r in m.evidence_rows[:50]] + \
+               [{"issue": "PRESENT_BUT_NOT_EXPECTED_BY_RULE", **r} for r in x.evidence_rows[:50]]
+        return CheckOutcome("PASS" if bad == 0 else "FAIL", f"{n_o} record(s) per the rule",
+                            f"{m.metrics['count']} missing, {x.metrics['count']} unexpected",
+                            "Output records match the rule" if bad == 0 else "Output records differ from what the rule implies",
+                            {"oracle_rows": n_o, "missing": m.metrics["count"], "unexpected": x.metrics["count"]},
+                            sorted({k for r in rows for k in r}, key=lambda k: (k != "issue", k)), rows)
+    n_oracle = ctx.one("SELECT COUNT(*) FROM oracle")[0]
+    n_out = ctx.one("SELECT COUNT(*) FROM actual")[0]
+    if n_oracle == 0:
+        return CheckOutcome("PASS" if n_out == 0 else "FAIL", "no output rows (the rule excludes every record)",
+                            f"{n_out} output row(s)", "The rule expects no output rows for this data, and the output is empty"
+                            if n_out == 0 else f"The rule expects no output rows, but the output has {n_out}",
+                            {"oracle_rows": 0, "output_rows": n_out})
+    fails, compared, ev, per = 0, 0, [], {}
+    for col in spec["columns"]:
+        r = check_column_match(ctx, {**base, "column": col})
+        per[col] = r.status
+        compared += r.metrics.get("compared", 0)
+        if r.status == "FAIL":
+            fails += r.metrics.get("mismatches", 1)
+            ev.extend(r.evidence_rows[:50])
+        elif r.status == "BLOCKED":
+            return CheckOutcome("BLOCKED", "", "", f"{col}: {r.message}", {"per_column": per})
+    cols = spec["columns"]
+    return CheckOutcome("PASS" if fails == 0 else "FAIL", f"{', '.join(cols)} follow the approved rule",
+                        f"{fails} value(s) differ", (f"All {compared} checked value(s) match the rule" if fails == 0 else
+                        f"{fails} value(s) differ from the rule ({', '.join(c for c, st in per.items() if st == 'FAIL')})"),
+                        {"per_column": per, "mismatches": fails, "compared": compared},
+                        list(ev[0].keys()) if ev else [], ev)
+
+
 CHECKS = {
     "SCHEMA_MATCH": check_schema, "ROW_COUNT": check_row_count, "KEY_UNIQUE": check_key_unique, "NOT_NULL": check_not_null,
     "RECON_MISSING": lambda c, s: _recon(c, s, "missing"), "RECON_EXTRA": lambda c, s: _recon(c, s, "extra"),
     "COLUMN_MATCH": check_column_match, "KEY_COVERAGE": check_key_coverage, "UNMATCHED_DEFAULTS": check_unmatched_defaults,
     "DUPLICATE_ROWS": check_duplicate_rows, "SNAPSHOT_MATCH": check_snapshot, "RULE_PREDICATE": check_predicate,
+    "RULE_ORACLE": check_rule_oracle, "VALUE_PROPERTY": check_value_property, "KEY_SUBSET": check_key_subset,
 }
 
 
@@ -340,7 +455,7 @@ def evaluate_guards(ctx: ValidationContext, guards: list[dict], open_gaps: set[s
         if g["gap_id"] not in open_gaps:
             continue
         if g["when"] == "ALWAYS":
-            return f"Blocked by open requirement gap {g['gap_id']}"
+            return f"Blocked by unanswered requirement gap {g['gap_id']}"
         if g["when"] == "NULLS_IN_SOURCE":
             for ref in g["columns"]:
                 alias, col = ref.split(".", 1)
@@ -350,11 +465,11 @@ def evaluate_guards(ctx: ValidationContext, guards: list[dict], open_gaps: set[s
                 except CheckError:
                     continue
                 if c and ctx.one(f"SELECT COUNT(*) FROM {q(t)} WHERE {q(c)} IS NULL")[0]:
-                    return f"Blocked by open gap {g['gap_id']}: {ref} contains nulls and null handling is not specified"
+                    return f"Blocked by unanswered gap {g['gap_id']}: {ref} contains nulls and null handling is not specified"
         if g["when"] == "NEGATIVE_IN_EXPECTED":
             c = ctx.col("expected", g["column"])
             if c and ctx.one(f"SELECT COUNT(*) FROM expected WHERE TRY_CAST({q(c)} AS DOUBLE) < 0")[0]:
-                return f"Blocked by open gap {g['gap_id']}: expected {g['column']} contains negative values whose behaviour is unspecified"
+                return f"Blocked by unanswered gap {g['gap_id']}: expected {g['column']} contains negative values whose behaviour is unspecified"
     return None
 
 

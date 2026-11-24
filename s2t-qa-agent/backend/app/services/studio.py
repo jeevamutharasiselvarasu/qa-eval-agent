@@ -153,12 +153,12 @@ def _context(db: Session, run_id: str) -> dict:
     ctx["requirements"] = [r.description for r in db.scalars(select(Requirement).where(Requirement.run_id == run_id,
                                                                                          Requirement.status == "ACCEPTED"))]
     try:
-        ctx["compiled_sql"] = "-- Draft generated from accepted mappings. Review before approving.\n" + "".join(
+        ctx["compiled_sql"] = "-- Generated from the requirements (target column rules and table rules). Review before approving.\n" + "".join(
             f"-- Assumption: {a}\n" for a in assumptions) + compile_visual(spec)
     except Exception as e:  # noqa: BLE001
         ctx["compile_error"] = str(e)
     try:
-        ctx["compiled_python"] = ("# Draft generated from accepted mappings. Review before approving.\n" + "".join(
+        ctx["compiled_python"] = ("# Generated from the requirements (target column rules and table rules). Review before approving.\n" + "".join(
             f"# Assumption: {a}\n" for a in assumptions) + compile_visual_to_pandas(spec, {a: [c['name'] for c in d.columns] for a, d in inputs.items()}))
     except (PandasUnsupported, KeyError, StopIteration) as e:
         ctx["python_error"] = f"Python draft not available for this definition: {e}"

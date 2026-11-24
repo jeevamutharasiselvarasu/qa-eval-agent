@@ -19,7 +19,7 @@ function Analysis({ a }) {
   )
 }
 
-function ResultModal({ r, exId, onClose }) {
+export function ResultModal({ r, exId, onClose }) {
   const [, act] = useAction()
   return (
     <Modal title={`${r.test_case_id} · ${r.title}`} onClose={onClose}>
@@ -34,7 +34,7 @@ function ResultModal({ r, exId, onClose }) {
   )
 }
 
-export default function ExecutionMonitor() {
+export default function ExecutionMonitor({ compact = false, onFinished }) {
   const { runId, run, reload: reloadRun } = useRun()
   const [execs, reload] = useLoad(() => api.get(`/runs/${runId}/executions`), [runId], 2500)
   const [sel, setSel] = useState(null)
@@ -46,7 +46,7 @@ export default function ExecutionMonitor() {
   const active = execs?.find(e => e.id === sel)
   const anyRunning = !!execs?.some(e => ['QUEUED', 'RUNNING'].includes(e.status))
   const wasRunning = React.useRef(false)
-  useEffect(() => { if (wasRunning.current && !anyRunning) reloadRun(); wasRunning.current = anyRunning }, [anyRunning]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (wasRunning.current && !anyRunning) { reloadRun(); onFinished && onFinished() } wasRunning.current = anyRunning }, [anyRunning]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (execs?.length && !sel) setSel(execs[0].id) }, [execs, sel])
   useEffect(() => {
     if (!sel) return
@@ -68,7 +68,7 @@ export default function ExecutionMonitor() {
 
   return (
     <div className="col">
-      <div className="grid g2">
+      {!compact && <><div className="grid g2">
         {['ACTUAL', 'SYNTHETIC'].map(t => {
           const miss = ready(t)
           const last = execs?.find(e => e.track === t)
@@ -81,7 +81,7 @@ export default function ExecutionMonitor() {
             </Card>)
         })}
       </div>
-      <label className="row gap-s small"><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />Force a new execution even if an identical completed execution exists (otherwise it is reused to prevent duplicates)</label>
+      <label className="row gap-s small"><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />Force a new execution even if an identical completed execution exists (otherwise it is reused to prevent duplicates)</label></>}
       <div className="grid" style={{ gridTemplateColumns: 'minmax(260px, 340px) minmax(0, 1fr)' }}>
         <Card title="Executions" flush>
           {!execs ? <Empty>Loading…</Empty> : !execs.length ? <Empty>No executions yet.</Empty> : (

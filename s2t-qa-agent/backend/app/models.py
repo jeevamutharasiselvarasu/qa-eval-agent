@@ -41,6 +41,17 @@ class ProjectConfig(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class AppSetting(Base):
+    """Application settings editable from the Settings page. Secrets are stored encrypted (see core/secrets.py)."""
+
+    __tablename__ = "qa_app_settings"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_by: Mapped[str] = mapped_column(String(128), default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class QARun(Base):
     __tablename__ = "qa_runs"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("RUN"))
@@ -50,6 +61,7 @@ class QARun(Base):
     status: Mapped[str] = mapped_column(String(48), default="RUN_CREATED", index=True)
     exception_state: Mapped[str | None] = mapped_column(String(48), nullable=True)
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    test_pack_basis: Mapped[str | None] = mapped_column(String(80), nullable=True)  # inputs hash when the pack was built
     created_by: Mapped[str] = mapped_column(String(128), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -78,7 +90,7 @@ class Requirement(Base):
     confidence: Mapped[str] = mapped_column(String(16), default="HIGH")  # HIGH | MEDIUM | LOW
     source_ref: Mapped[str] = mapped_column(String(200), default="")
     evidence: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(String(24), default="PROPOSED")  # PROPOSED | ACCEPTED | REJECTED
+    status: Mapped[str] = mapped_column(String(24), default="PROPOSED")  # PROPOSED | ACCEPTED | REJECTED | SUPERSEDED
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -179,6 +191,8 @@ class TransformationVersion(Base):
     content_hash: Mapped[str] = mapped_column(String(80))
     validation: Mapped[dict] = mapped_column(JSON, default=dict)
     comment: Mapped[str] = mapped_column(Text, default="")
+    # hash of the target-column rules a requirements-generated version was built from (None = not generated from them)
+    requirements_basis: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_by: Mapped[str] = mapped_column(String(128), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     transformation: Mapped[Transformation] = relationship(back_populates="versions")
@@ -243,6 +257,11 @@ class TestCase(Base):
     requirement_ids: Mapped[list] = mapped_column(JSON, default=list)
     mapping_ids: Mapped[list] = mapped_column(JSON, default=list)
     rationale: Mapped[str] = mapped_column(Text, default="")  # e.g. PROFILING rationale when no requirement
+    test_type: Mapped[str] = mapped_column(String(16), default="POSITIVE")  # POSITIVE | NEGATIVE | EDGE | GENERAL
+    # where the test comes from: ACCEPTANCE_CRITERIA | TRANSFORMATION_LOGIC | GENERAL
+    basis: Mapped[str] = mapped_column(String(24), default="ACCEPTANCE_CRITERIA")
+    # chosen for the next validation run (not part of the approved content: choosing tests needs no re-approval)
+    selected: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[str] = mapped_column(String(8), default="P2")
     severity: Mapped[str] = mapped_column(String(16), default="MAJOR")
     state: Mapped[str] = mapped_column(String(16), default="READY")  # READY | BLOCKED | EXCLUDED
@@ -283,6 +302,7 @@ class Execution(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    selected_test_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)  # None = every test of the track
     started_by: Mapped[str] = mapped_column(String(128), default="system")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

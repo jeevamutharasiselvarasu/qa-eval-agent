@@ -46,7 +46,36 @@ def get_engine():
 def create_all() -> None:
     from . import models  # noqa: F401
 
-    Base.metadata.create_all(get_engine())
+    eng = get_engine()
+    Base.metadata.create_all(eng)
+    _add_missing_columns(eng)
+
+
+def _add_missing_columns(eng) -> None:
+    """Light forward migration for existing databases: add columns introduced after the table was created.
+    New columns are always nullable or defaulted, so existing rows stay valid."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(eng)
+    with eng.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have:
+                    continue
+                ddl_type = col.type.compile(dialect=eng.dialect)
+                default = ""
+                if col.default is not None and getattr(col.default, "is_scalar", False):
+                    v = col.default.arg
+                    if isinstance(v, bool):
+                        default = f" DEFAULT {'TRUE' if v else 'FALSE'}"
+                    elif isinstance(v, (int, float)):
+                        default = f" DEFAULT {v}"
+                    elif isinstance(v, str):
+                        default = " DEFAULT '" + v.replace("'", "''") + "'"
+                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ddl_type}{default}'))
 
 
 @contextmanager

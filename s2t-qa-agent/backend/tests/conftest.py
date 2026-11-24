@@ -62,6 +62,16 @@ def wait_exec(client, eid, timeout=90):
     raise AssertionError("execution did not finish")
 
 
+def complete_requirements(client, rid, status="ACCEPTED_LIMITATION"):
+    """Answer every open question so the SQL can be generated (a limitation keeps dependent tests BLOCKED)."""
+    spec = client.get(f"/api/runs/{rid}/target-spec").json()
+    for q in spec["questions"]:
+        if q["status"] == "OPEN":
+            r = client.post(f"/api/runs/{rid}/target-spec/questions/{q['id']}", json={"status": status, "note": "Not specified in Jira; tested later."})
+            assert r.status_code == 200, r.text
+    return client.get(f"/api/runs/{rid}/target-spec").json()
+
+
 def prepare_run(client, mode="SQL", approve=True):
     """Drive the API from run creation to approved artifacts (actual track)."""
     run = client.post("/api/runs", json={"jira_key": "DATA-1234"}).json()
@@ -76,6 +86,7 @@ def prepare_run(client, mode="SQL", approve=True):
     assert upload(client, rid, "customer_master_target.csv", "target").status_code == 200
     assert client.post(f"/api/runs/{rid}/profile").status_code == 200
     assert client.post(f"/api/runs/{rid}/mappings/generate").status_code == 200
+    complete_requirements(client, rid)
     v = client.post(f"/api/runs/{rid}/transformations/generate", json={"mode": mode}).json()
     assert client.post(f"/api/runs/{rid}/test-cases/generate").status_code == 200
     if approve:

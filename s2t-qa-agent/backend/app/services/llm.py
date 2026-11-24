@@ -99,7 +99,7 @@ class MockLLM(BaseLLM):
         # The mock relies on the deterministic compiler output supplied in context.
         if mode == "SQL" and context.get("compiled_sql"):
             return CodeProposal(code=context["compiled_sql"],
-                                explanation="Generated from accepted mappings and Jira rules (mock provider: "
+                                explanation="Built by the deterministic template (mock provider: "
                                             "deterministic template, not a language model).")
         if mode == "PYTHON" and context.get("compiled_python"):
             return CodeProposal(code=context["compiled_python"],

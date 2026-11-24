@@ -1,15 +1,16 @@
 import React from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
-import { LayoutDashboard, PlusCircle, History, ShieldCheck } from 'lucide-react'
+import { LayoutDashboard, PlusCircle, History, ShieldCheck, Settings as SettingsIcon } from 'lucide-react'
 import { ToastProvider, useLoad, Badge } from './components/ui.jsx'
 import { api } from './api.js'
 import Dashboard from './pages/Dashboard.jsx'
 import NewRun from './pages/NewRun.jsx'
 import RunHistory from './pages/RunHistory.jsx'
 import RunWorkspace from './pages/RunWorkspace.jsx'
+import Settings from './pages/Settings.jsx'
 
 export default function App() {
-  const [meta] = useLoad(() => api.get('/meta'), [])
+  const [meta, reloadMeta] = useLoad(() => api.get('/meta'), [])
   return (
     <ToastProvider>
       <div className="shell">
@@ -21,12 +22,13 @@ export default function App() {
           <nav className="nav col gap-s" style={{ gap: 2 }}>
             <NavLink to="/" end><LayoutDashboard size={16} />Dashboard</NavLink>
             <NavLink to="/runs/new"><PlusCircle size={16} />New QA run</NavLink>
-            <NavLink to="/runs"><History size={16} />Run history</NavLink>
+            <NavLink to="/runs" end><History size={16} />Run history</NavLink>
+            <NavLink to="/settings"><SettingsIcon size={16} />Settings</NavLink>
           </nav>
           <div className="sidebar-foot">
             <div className="row gap-s"><ShieldCheck size={14} /> AI proposes; deterministic execution proves.</div>
             {meta && <div className="row wrap gap-s">
-              <Badge s={meta.jira_mode === 'mock' ? 'MOCK' : 'APPROVED'}>Jira: {meta.jira_mode}</Badge>
+              <Badge s={meta.jira_mode === 'mock' ? 'MOCK' : 'APPROVED'} title={meta.jira_site || 'Sample tickets'}>Jira: {meta.jira_mode === 'mock' ? 'samples' : 'cloud'}</Badge>
               <Badge s={meta.llm_mode === 'mock' ? 'MOCK' : 'APPROVED'}>AI: {meta.llm_mode}</Badge>
             </div>}
             {meta && <div>{meta.user} · {meta.role}</div>}
@@ -37,6 +39,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/runs/new" element={<NewRun meta={meta} />} />
             <Route path="/runs" element={<RunHistory />} />
+            <Route path="/settings" element={<Settings meta={meta} onSaved={reloadMeta} />} />
             <Route path="/runs/:runId/*" element={<RunWorkspace meta={meta} />} />
           </Routes>
         </main>

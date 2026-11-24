@@ -120,6 +120,8 @@ def collect(db: Session, run: QARun, execution_ids: list[str] | None = None) -> 
                                         for d in datasets if d.role == "SOURCE"],
                     "target_dataset": [{"id": d.id, "file": d.filename, "rows": d.row_count, "fingerprint": d.fingerprint}
                                        for d in datasets if d.role == "TARGET"],
+                    "selection": {"selected": len(results), "in_pack": len(tcs),
+                                  "not_selected": sorted(set(tcs) - {r.test_case_id for r in results})},
                     "counts": tot, "counts_actual": counts("ACTUAL"), "counts_synthetic": counts("SYNTHETIC"), "overall": overall,
                     "open_gaps": [{"id": g.id, "status": g.status, "description": g.description} for g in gaps if g.status in ("OPEN", "BLOCKED")]},
         "traceability": build_traceability(db, run, ex_ids),
@@ -131,7 +133,8 @@ def collect(db: Session, run: QARun, execution_ids: list[str] | None = None) -> 
         "reconciliation": recon,
         "test_results": [{"test_case_id": r.test_case_id, "execution_id": r.execution_id, "track": tcs[r.test_case_id].track,
                           "scenario_id": tcs[r.test_case_id].scenario_id, "category": tcs[r.test_case_id].category,
-                          "title": tcs[r.test_case_id].title, "status": r.status, "expected": r.expected, "actual": r.actual,
+                          "title": tcs[r.test_case_id].title, "basis": tcs[r.test_case_id].basis,
+                          "test_type": tcs[r.test_case_id].test_type, "status": r.status, "expected": r.expected, "actual": r.actual,
                           "message": r.message, "acceptance_criteria": ", ".join(tcs[r.test_case_id].ac_ids),
                           "requirements": ", ".join(tcs[r.test_case_id].requirement_ids), "evidence_id": r.evidence_id,
                           "duration_ms": r.duration_ms} for r in sorted(results, key=lambda x: x.test_case_id)],
@@ -185,12 +188,14 @@ th{{background:#f0f2f7}} .card{{background:#fff;border:1px solid #e3e6ee;border-
 </style></head><body>
 <h1>QA Report — {e(s['jira_ticket'])}</h1><p class='muted'>Run {e(s['qa_run_id'])} · Jira source: {e(str(s['jira_source']))} ·
 Executions: {e(', '.join(x['execution_id'] + ' (' + x['track'] + ', ' + x['status'] + ')' for x in s['executions']))}</p>
-<h2>Execution summary — overall: {e(s['overall'])}</h2><div class='tiles'>{tiles}</div>
+<h2>Execution summary — overall: {e(s['overall'])}</h2>
+<p>Test cases run: <b>{s['selection']['selected']}</b> selected of {s['selection']['in_pack']} in the approved test pack{(' (not selected: ' + e(', '.join(s['selection']['not_selected'][:40])) + ('…' if len(s['selection']['not_selected']) > 40 else '') + ')') if s['selection']['not_selected'] else ''}.</p>
+<div class='tiles'>{tiles}</div>
 <p>Actual track: {e(json.dumps(s['counts_actual']))}<br>Synthetic track: {e(json.dumps(s['counts_synthetic']))}</p>
 <h3>Open requirement gaps</h3>{table(s['open_gaps'], ['id', 'status', 'description'])}
 <h2>Requirement traceability</h2>{table([{**r, 'requirement_ids': ', '.join(r['requirement_ids']), 'mapping_ids': ', '.join(r['mapping_ids']), 'test_case_ids': ', '.join(r['test_case_ids']), 'result_statuses': ', '.join(r['result_statuses'])} for r in data['traceability']], ['acceptance_criterion', 'criterion_text', 'requirement_ids', 'mapping_ids', 'test_case_ids', 'result_statuses', 'coverage'])}
 <h2>Actual-data reconciliation</h2>{table([rec] if rec else [], list(rec.keys()))}
-<h2>Test results</h2>{table(data['test_results'], ['test_case_id', 'track', 'scenario_id', 'category', 'title', 'status', 'expected', 'actual', 'message', 'acceptance_criteria'])}
+<h2>Test results</h2>{table([{**r, 'basis': (r.get('basis') or '').replace('_', ' ').lower()} for r in data['test_results']], ['test_case_id', 'basis', 'test_type', 'track', 'scenario_id', 'title', 'status', 'expected', 'actual', 'message', 'acceptance_criteria'])}
 <h2>Column-level differences</h2>{table(data['column_differences'], ['test_case_id', 'business_key', 'column', 'expected', 'actual', 'difference'])}
 <h2>Synthetic testing</h2>{table(data['synthetic'], ['scenario_id', 'scenario', 'status', 'blocked_reason', 'seed', 'explanation', 'assumptions'])}
 <h2>AI-assisted failure analysis</h2>{fa or "<p class='muted'>No failures.</p>"}

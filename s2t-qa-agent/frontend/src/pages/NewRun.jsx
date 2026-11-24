@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Upload, X, Play, CheckCircle2, Circle, Loader2 } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Upload, X, Play, CheckCircle2, Circle, Loader2, Search } from 'lucide-react'
 import { api } from '../api.js'
 import { Alert, Badge, Btn, Card, useToast } from '../components/ui.jsx'
 
@@ -31,6 +31,8 @@ export default function NewRun({ meta }) {
   const [settings, setSettings] = useState({ synthetic_records_per_scenario: 12, synthetic_seed: 20261103, default_numeric_tolerance: 0, trim: false, ci: false })
   const [steps, setSteps] = useState([])
   const [err, setErr] = useState(null)
+  const [ticket, setTicket] = useState(null)
+  const [checking, setChecking] = useState(false)
   const busy = steps.some(s => s.state === 'run')
 
   const addSources = (files) => setSources(s => [...s, ...files.map(f => ({ file: f, alias: alias(f.name), label: f.name }))])
@@ -38,7 +40,8 @@ export default function NewRun({ meta }) {
 
   async function go() {
     setErr(null)
-    const plan = ['Create QA run', 'Retrieve Jira issue', ...sources.map(s => `Upload source: ${s.alias}`), 'Upload target', 'Parse & profile datasets', 'Propose mappings']
+    const plan = ['Create QA run', 'Retrieve Jira issue', ...sources.map(s => `Upload source: ${s.alias}`), 'Upload target', 'Parse & profile datasets', 'Read how each target column is built',
+      'Generate the SQL and test pack (when the requirements are complete)']
     const st = plan.map(l => ({ label: l, state: 'todo' }))
     setSteps(st)
     const mark = (i, state, note) => setSteps(prev => prev.map((p, j) => j === i ? { ...p, state, note } : p))
@@ -65,9 +68,20 @@ export default function NewRun({ meta }) {
       const t = await api.upload(`/runs/${runId}/datasets/target`, fd)
       mark(i++, 'done', `${t.row_count} rows · ${t.columns.length} columns`)
       mark(i, 'run'); await api.post(`/runs/${runId}/profile`); mark(i++, 'done')
-      mark(i, 'run'); const m = await api.post(`/runs/${runId}/mappings/generate`); mark(i++, 'done', `${m.length} mapping records`)
+      mark(i, 'run'); await api.post(`/runs/${runId}/mappings/generate`)
+      const { sync, spec } = await api.post(`/runs/${runId}/target-spec/sync`, {})
+      mark(i++, 'done', `${spec.columns.length} target columns · ${spec.columns.filter(c => c.state === 'CLEAR').length} clear`)
+      mark(i, 'run')
+      if (!sync.ready) {
+        mark(i++, 'done', `Waiting: ${sync.open_items.length} item(s) in the requirements need your input`)
+        toast('Run created: complete the requirements to generate the SQL')
+        nav(`/runs/${runId}/requirements`)
+        return
+      }
+      const pk = await api.get(`/runs/${runId}/test-pack`)
+      mark(i++, 'done', `SQL v${sync.version ?? ''} · ${pk.test_cases} test cases (${pk.by_type.POSITIVE} positive, ${pk.by_type.NEGATIVE} negative, ${pk.by_type.EDGE} edge)`)
       toast('QA run ready for review')
-      nav(`/runs/${runId}/requirements`)
+      nav(`/runs/${runId}/overview`)
     } catch (e) {
       mark(i, 'err', e.message)
       setErr({ msg: e.message, runId })
@@ -79,12 +93,23 @@ export default function NewRun({ meta }) {
       <div className="page-head"><div><h1>New QA run</h1><p>Enter a Jira ticket, upload one or more source datasets and exactly one existing target dataset.</p></div></div>
       <div className="grid g2" style={{ gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,1fr)' }}>
         <div className="col">
-          <Card title="1 · Jira ticket" actions={meta && <Badge s={meta.jira_mode === 'mock' ? 'MOCK' : 'APPROVED'}>{meta.jira_mode === 'mock' ? 'Mock Jira fixtures' : 'Jira Cloud connected'}</Badge>}>
+          <Card title="1 · Jira ticket" actions={meta && <Badge s={meta.jira_mode === 'mock' ? 'MOCK' : 'APPROVED'} title={meta.jira_site}>{meta.jira_mode === 'mock' ? 'Sample tickets' : 'Jira Cloud connected'}</Badge>}>
             <div className="grid g2">
-              <label className="field">Issue key<input value={key} onChange={e => setKey(e.target.value.toUpperCase())} placeholder="DATA-1234" /></label>
+              <label className="field">Issue key
+                <span className="row gap-s"><input value={key} onChange={e => { setKey(e.target.value.toUpperCase()); setTicket(null) }} placeholder="DATA-1234" className="grow" />
+                  <Btn icon={Search} busy={checking} onClick={async () => {
+                    setChecking(true)
+                    try { setTicket({ ok: true, ...(await api.post('/jira/preview', { jira_key: key.trim() })) }) } catch (e) { setTicket({ ok: false, error: e.message }) }
+                    setChecking(false)
+                  }}>Check</Btn></span></label>
               <label className="field">Run name (optional)<input value={name} onChange={e => setName(e.target.value)} placeholder="Customer master validation" /></label>
             </div>
-            {meta?.jira_mode === 'mock' && <div className="tiny muted mt-s">Mock mode serves clearly labelled fixtures (try DATA-1234). Set JIRA_MODE=cloud with credentials in .env for live Jira.</div>}
+            {ticket && (ticket.ok ? (
+              <div className="mt"><Alert kind="ok"><b>{ticket.key}</b> · {ticket.summary} <span className="tiny">({ticket.issue_type}, {ticket.status}{ticket.source === 'MOCK' ? ', sample ticket' : ''})</span>
+                <div className="tiny mt-s">{ticket.acceptance_criteria.length} acceptance criteria found · {ticket.comments} comments · {ticket.attachments} attachments</div>
+                {ticket.acceptance_criteria.length === 0 && <div className="tiny mt-s">No acceptance criteria were found. Tests will be limited to general reconciliation.</div>}
+              </Alert></div>) : <div className="mt"><Alert kind="err">{ticket.error}</Alert></div>)}
+            {meta?.jira_mode === 'mock' && <div className="tiny muted mt-s">Using built-in sample tickets (try DATA-1234 or SALES-77). Connect your Jira Cloud site in <Link to="/settings">Settings</Link>.</div>}
           </Card>
           <Card title="2 · Source datasets" sub="Each source becomes a SQL table / Python sources[...] key under its alias.">
             <Drop multiple onFiles={addSources} label="Drop source files or click to browse" />
@@ -120,7 +145,7 @@ export default function NewRun({ meta }) {
             <div className="tiny muted mt-s">Column tolerances derived from Jira precision rules override the default. Settings are part of the approval set.</div>
           </Card>
           <Card title="Start">
-            <Btn className="primary" icon={Play} onClick={go} disabled={!canGo} busy={busy}>Create run, retrieve Jira and profile data</Btn>
+            <Btn className="primary" icon={Play} onClick={go} disabled={!canGo} busy={busy}>Create run</Btn>
             {!canGo && !busy && <div className="tiny muted mt-s">Requires a Jira key, at least one source and a target.</div>}
             {steps.length > 0 && <div className="col gap-s mt">
               {steps.map((s, i) => (

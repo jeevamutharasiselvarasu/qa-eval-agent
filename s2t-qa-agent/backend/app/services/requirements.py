@@ -360,13 +360,16 @@ def persist_analysis(db: Session, run_id: str, doc: dict, actor: str, use_ai: bo
         db.delete(r)
     db.flush()
     existing_ids = set(db.scalars(select(Requirement.id).where(Requirement.run_id == run_id)))
-    n = len(existing_ids)
-    for e in res.requirements:
+    n = 0
+
+    def next_id() -> str:  # skip IDs kept by user-confirmed requirements
+        nonlocal n
         n += 1
-        rid = f"REQ-{n:03d}"
-        while rid in existing_ids:
+        while f"REQ-{n:03d}" in existing_ids:
             n += 1
-            rid = f"REQ-{n:03d}"
+        return f"REQ-{n:03d}"
+    for e in res.requirements:
+        rid = next_id()
         db.add(Requirement(id=rid, run_id=run_id, ac_id=e.ac_id, kind=e.kind, description=e.description, spec=e.spec,
                            provenance=e.provenance, confidence=e.confidence, source_ref=e.ref, evidence=e.evidence,
                            status=e.status))
@@ -380,8 +383,7 @@ def persist_analysis(db: Session, run_id: str, doc: dict, actor: str, use_ai: bo
                        ok=err is None, latency_ms=ms, error=err))
         if out:
             for pr in out.rules:
-                n += 1
-                db.add(Requirement(id=f"REQ-{n:03d}", run_id=run_id, kind=pr.kind, description=pr.description,
+                db.add(Requirement(id=next_id(), run_id=run_id, kind=pr.kind, description=pr.description,
                                    spec={"target": pr.target_column} if pr.target_column else {},
                                    provenance="AI_INFERRED", confidence=pr.confidence, source_ref=f"ai:{llm.name}",
                                    evidence=pr.evidence_quote, status="PROPOSED"))
@@ -415,7 +417,7 @@ def profile_gaps(db: Session, run_id: str, profiles: dict[str, dict], alias_map:
     gaps = list(db.scalars(select(RequirementGap).where(RequirementGap.run_id == run_id)))
     created = []
     for r in reqs:
-        if r.kind != "DERIVED_COLUMN" or r.status == "REJECTED":
+        if r.kind != "DERIVED_COLUMN" or r.status != "ACCEPTED":
             continue
         for col in r.spec.get("columns", []):
             for alias, prof in profiles.items():

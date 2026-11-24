@@ -21,7 +21,7 @@ def test_full_actual_track_finds_planted_defects(client):
     d = wait_exec(client, ex["id"])
     assert d["status"] == "COMPLETED"
     res = {r["test_case_id"]: r for r in d["results"]}
-    by_title = {r["title"].split(" matches")[0]: r for r in d["results"]}
+    by_title = {r["title"].split(" in the uploaded target")[0]: r for r in d["results"] if " in the uploaded target " in r["title"]}
     assert by_title["NET_AMOUNT"]["status"] == "FAIL"
     diff = by_title["NET_AMOUNT"]["evidence"]["sample"][0]
     assert diff["CUSTOMER_ID"] == "C102" and diff["expected"] == 1800 and diff["actual"] == 1700 and diff["difference"] == -100
@@ -82,11 +82,11 @@ def test_synthetic_track_uses_same_engine_and_blocks_unknowns(client):
     again = client.post(f"/api/runs/{rid}/execute/synthetic", json={}).json()
     assert again["reused"] is True
     res = d["results"]
-    nullkey = [r for r in res if r["scenario_id"] == sc["NULL_KEY"]["id"] and "never null" in r["title"]]
+    nullkey = [r for r in res if r["scenario_id"] == sc["NULL_KEY"]["id"] and "null" in r["title"]]
     assert nullkey and nullkey[0]["status"] == "FAIL"  # real finding: transformation does not drop null keys
     assert all(r["status"] == "BLOCKED" for r in res if r["scenario_id"] == sc["NEGATIVE_RESULT"]["id"])
-    snap = [r for r in res if "reproduces" in r["title"] and r["status"] not in ("BLOCKED",)]
-    assert snap and all(r["status"] == "PASS" for r in snap)
+    rule = [r for r in res if r["category"] in ("RULE", "FILTER") and r["status"] != "BLOCKED"]
+    assert rule and all(r["status"] == "PASS" for r in rule)  # the AI-drafted transformation follows the mapping rules
     # download a synthetic expected target
     exp = next(s for s in client.get(f"/api/runs/{rid}/synthetic-data").json() if s["scenario_type"] == "POSITIVE")["expected"]
     f = client.get(f"/api/runs/{rid}/datasets/{exp['id']}/download")

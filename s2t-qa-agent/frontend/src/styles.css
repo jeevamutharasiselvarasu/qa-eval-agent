@@ -170,3 +170,14 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .cell-wrap { max-width: 220px; overflow-wrap: break-word; word-break: normal; }
 @media (max-width: 900px) { .grid[style] { grid-template-columns: 1fr !important; } }
+/* requirements: target column states and origins */
+.badge.CLEAR, .badge.CURRENT { background: var(--pass-bg); color: var(--pass); }
+.badge.MISSING, .badge.INVALID { background: var(--fail-bg); color: var(--fail); }
+.badge.QUESTION, .badge.SUGGESTED, .badge.ACCEPTED_LIMITATION { background: var(--blocked-bg); color: var(--blocked); }
+.badge.JIRA { background: #e7f0ff; color: #1d4ed8; }
+.badge.EDITED { background: #fff1e6; color: #b45309; }
+.badge.NONE { background: transparent; color: var(--text-3, #8a91a3); }
+button.chip.click { border: 1px solid transparent; cursor: pointer; }
+button.chip.click:hover { border-color: var(--border-strong); background: var(--surface-2, #f3f4f7); }
+
+.selbar { position: sticky; top: 8px; z-index: 5; box-shadow: 0 4px 14px rgba(20,30,60,.08); }

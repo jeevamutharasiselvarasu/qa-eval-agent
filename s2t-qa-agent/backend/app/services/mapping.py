@@ -35,7 +35,7 @@ class Ctx:
         self.sources = list(db.scalars(select(Dataset).where(Dataset.run_id == run_id, Dataset.role == "SOURCE",
                                                              Dataset.feeds_target.is_(True))))
         self.target = db.scalars(select(Dataset).where(Dataset.run_id == run_id, Dataset.role == "TARGET")).first()
-        self.reqs = [r for r in db.scalars(select(Requirement).where(Requirement.run_id == run_id)) if r.status != "REJECTED"]
+        self.reqs = [r for r in db.scalars(select(Requirement).where(Requirement.run_id == run_id)) if r.status == "ACCEPTED"]
         self.gaps = list(db.scalars(select(RequirementGap).where(RequirementGap.run_id == run_id)))
         self.cols = {d.alias: [c["name"] for c in d.columns] for d in self.sources}
         self.types = {(d.alias, c["name"].upper()): c["type"] for d in self.sources for c in d.columns}

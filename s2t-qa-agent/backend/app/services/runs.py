@@ -58,6 +58,9 @@ def retrieve_jira(db: Session, run: QARun, actor: str) -> JiraIssue:
     clear_exception(db, run, {"JIRA_RETRIEVAL_FAILED"})
     set_state(db, run, "JIRA_RETRIEVED", actor)
     res = persist_analysis(db, run.id, doc.to_dict(), actor)
+    db.flush()
+    from .target_spec import apply_overrides
+    apply_overrides(db, run.id, actor)  # in-app requirement edits survive re-retrieval
     issue.warnings = res.warnings
     set_state(db, run, "REQUIREMENTS_ANALYZED", actor)
     db.flush()
@@ -162,6 +165,8 @@ def generate_mappings(db: Session, run: QARun, actor: str):
         raise WorkflowError("Retrieve Jira requirements first")
     if not db.scalars(select(Dataset).where(Dataset.run_id == run.id, Dataset.role == "SOURCE")).first():
         raise WorkflowError("Upload source datasets first")
+    from .target_spec import apply_overrides
+    apply_overrides(db, run.id, actor)
     maps = mapping_svc.propose(db, run.id, actor)
     set_state(db, run, "MAPPING_GENERATED", actor)
     if any(m.status == "PROPOSED" and m.mapping_type != "UNMAPPED_SOURCE" for m in maps):

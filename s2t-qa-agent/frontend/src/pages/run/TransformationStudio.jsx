@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import CodeMirror from '@uiw/react-codemirror'
 import { sql as sqlLang, StandardSQL } from '@codemirror/lang-sql'
 import { python } from '@codemirror/lang-python'
@@ -34,6 +35,7 @@ function Diff({ a, b }) {
 export default function TransformationStudio() {
   const { runId, run, reload: reloadRun, meta } = useRun()
   const [tr, reload] = useLoad(() => api.get(`/runs/${runId}/transformations`), [runId])
+  const [spec, reloadSpec] = useLoad(() => api.get(`/runs/${runId}/target-spec`), [runId])
   const [schema] = useLoad(() => api.get(`/runs/${runId}/transformations/schema`), [runId])
   const [mode, setMode] = useState('SQL')
   const [drafts, setDrafts] = useState({ SQL: '', PYTHON: '', VISUAL: null })
@@ -73,7 +75,9 @@ export default function TransformationStudio() {
   const ext = useMemo(() => mode === 'PYTHON' ? [python()] : [sqlLang({ dialect: StandardSQL, upperCaseKeywords: true,
     schema: Object.fromEntries(Object.entries(schema?.sources || {}).map(([a, cs]) => [a, cs.map(c => c.name)])) })], [mode, schema])
 
-  const refresh = async () => { reload(); reloadRun() }
+  const refresh = async () => { reload(); reloadRun(); reloadSpec() }
+  const regenerate = () => act('regen', async () => { await api.post(`/runs/${runId}/target-spec/sync`, { force: true }); setLoadedFrom(null); refresh() }, 'SQL regenerated from the requirements')
+  const reqLink = <Link to={`/runs/${runId}/requirements`}>Requirements</Link>
   const loadVersion = (v) => { setMode(v.mode); setDrafts(d => ({ ...d, [v.mode]: v.mode === 'VISUAL' ? v.visual_spec : v.code })); setLoadedFrom(v.id) }
 
   const generate = () => act('gen', async () => {
@@ -101,8 +105,15 @@ export default function TransformationStudio() {
 
   if (!tr || !schema) return <div className="muted">Loading…</div>
   const apr = tr.approval
+  const sqlState = spec?.sql?.state
   return (
     <div className="col">
+      {spec && !spec.ready && <Alert kind="warn"><b>The requirements are not complete ({spec.open_items.length} item(s)).</b> The SQL is generated
+        from the requirements: complete them on the {reqLink} tab and it is created here automatically.{cur ? ' The version below is kept until then.' : ''}</Alert>}
+      {spec?.ready && sqlState === 'CURRENT' && cur?.requirements_basis && <Alert kind="ok">This SQL was generated from the {reqLink}. To change it, edit the requirements (preferred) or edit the code here.</Alert>}
+      {spec?.ready && ['MANUAL_OUTDATED', 'READY_TO_GENERATE', 'WILL_REGENERATE'].includes(sqlState) && <Alert kind="warn">
+        <div className="row gap-s"><span className="grow">{sqlState === 'MANUAL_OUTDATED' ? 'This SQL was edited by hand and the requirements changed since.' : 'The SQL has not been generated from the current requirements yet.'}</span>
+          <Btn className="sm primary" icon={Sparkles} busy={busy === 'regen'} onClick={regenerate}>Generate from requirements</Btn></div></Alert>}
       <Card title={<div className="row wrap gap-s"><h3>Transformation Studio</h3>
         {cur && <><Badge className="outline">v{cur.version} · {cur.mode}</Badge><Badge s={cur.origin}>{cur.origin.replaceAll('_', ' ')}</Badge><Badge s={apr.status}>approval: {apr.status}</Badge></>}
         {!draftEqualsCurrent && <Badge s="PENDING">unsaved draft</Badge>}</div>}
@@ -128,7 +139,8 @@ export default function TransformationStudio() {
                 onChange={v => setDrafts(d => ({ ...d, [mode]: v }))} />}
             <div className="row wrap gap-s">
               <input value={instruction} onChange={e => setInstruction(e.target.value)} placeholder={mode === 'VISUAL' ? 'AI draft from accepted mappings' : 'Optional instruction, e.g. “aggregate NET_AMOUNT by CUSTOMER_ID”'} className="grow" style={{ minWidth: 220 }} />
-              <Btn icon={Sparkles} busy={busy === 'gen'} onClick={generate}>AI generate</Btn>
+              <Btn icon={Sparkles} busy={busy === 'gen'} onClick={generate} disabled={spec && !spec.ready && !(instruction.trim() && cur)}
+                title={spec && !spec.ready ? 'Complete the requirements first' : ''}>AI generate</Btn>
               <Btn icon={BookOpen} busy={busy === 'exp'} onClick={doExplain}>Explain</Btn>
               <Btn icon={Wrench} busy={busy === 'fix'} onClick={doFix} disabled={mode === 'VISUAL'} title={lastErr ? 'Suggest a fix for the last error' : 'Run or validate first'}>Fix</Btn>
             </div>

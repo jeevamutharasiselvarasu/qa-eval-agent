@@ -86,7 +86,7 @@ def test_second_scenario_composite_key_lookup_join_python_mode(client):
         rows[mode] = sorted((str(r["SALE_DATE"]), r["PRODUCT_CODE"], float(r["TOTAL_QTY"]), round(float(r["GROSS_REVENUE"]), 2)) for r in p["preview"]["rows"])
     assert rows["VISUAL"] == rows["SQL"] == rows["PYTHON"] and len(rows["SQL"]) == 7
     tcs = client.post(f"/api/runs/{rid}/test-cases/generate").json()
-    assert all(t["state"] == "READY" for t in tcs)
+    assert all(t["state"] == "READY" for t in tcs if t["track"] == "ACTUAL" and t["category"] != "REQUIREMENT")
     for k in ["REQUIREMENTS", "DATASETS", "MAPPINGS", "EXECUTION_SETTINGS"]:
         assert client.post(f"/api/runs/{rid}/approvals", json={"artifact_type": k, "decision": "APPROVED"}).status_code == 200
     assert client.post(f"/api/runs/{rid}/transformations/{v['id']}/approve", json={"decision": "APPROVED"}).status_code == 200
@@ -99,7 +99,7 @@ def test_second_scenario_composite_key_lookup_join_python_mode(client):
         client.post(f"/api/runs/{rid}/approvals", json={"artifact_type": k, "decision": "APPROVED"})
     d = wait_exec(client, client.post(f"/api/runs/{rid}/execute/actual", json={}).json()["id"])
     fails = [r for r in d["results"] if r["status"] == "FAIL"]
-    assert [r["title"].split(" matches")[0] for r in fails] == ["TOTAL_QTY"]
+    assert [r["title"].split(" in the uploaded target")[0] for r in fails] == ["TOTAL_QTY"]
     assert fails[0]["evidence"]["sample"][0]["PRODUCT_CODE"] == "P-300"  # off-by-one planted; 0.004 revenue drift is within tolerance
     s = wait_exec(client, client.post(f"/api/runs/{rid}/execute/synthetic", json={}).json()["id"])
     assert s["status"] == "COMPLETED" and s["summary"]["ERROR"] == 0

@@ -111,21 +111,34 @@ class MockJiraConnector:
 
 
 class JiraCloudConnector:
-    def __init__(self, client: httpx.Client | None = None):
-        s = get_settings()
-        if not (s.jira_base_url and s.jira_email and s.jira_api_token):
-            raise JiraError("NOT_CONFIGURED", "JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN must be set")
-        if not s.jira_base_url.startswith("https://"):
-            raise JiraError("NOT_CONFIGURED", "JIRA_BASE_URL must use https")
-        token = base64.b64encode(f"{s.jira_email}:{s.jira_api_token}".encode()).decode()
-        self.base = s.jira_base_url.rstrip("/")
-        self.ac_fields = s.jira_ac_custom_fields
-        self.max_att = s.jira_max_attachment_bytes
+    def __init__(self, config: dict | None = None, client: httpx.Client | None = None):
+        if config is None:
+            from .settings_svc import get_jira_config
+            config = get_jira_config()
+        base, email, token = config.get("base_url", ""), config.get("email", ""), config.get("api_token", "")
+        if not (base and email and token):
+            raise JiraError("NOT_CONFIGURED", "Jira site URL, email and API token must be set (Settings page or .env)")
+        if not base.startswith("https://"):
+            raise JiraError("NOT_CONFIGURED", "The Jira site URL must start with https://")
+        auth = base64.b64encode(f"{email}:{token}".encode()).decode()
+        self.base = base.rstrip("/")
+        self.ac_fields = list(config.get("ac_custom_fields") or [])
+        self.max_att = get_settings().jira_max_attachment_bytes
         self.client = client or httpx.Client(
-            timeout=s.jira_timeout_s,
-            headers={"Authorization": f"Basic {token}", "Accept": "application/json"},
+            timeout=float(config.get("timeout_s") or get_settings().jira_timeout_s),
+            headers={"Authorization": f"Basic {auth}", "Accept": "application/json"},
             follow_redirects=False,
         )
+
+    def myself(self) -> dict:
+        """Connection test: who the token belongs to, plus the site's deployment type."""
+        me = self._get("/rest/api/3/myself").json()
+        try:
+            info = self._get("/rest/api/3/serverInfo").json()
+        except JiraError:
+            info = {}
+        return {"display_name": me.get("displayName", ""), "active": me.get("active", True),
+                "deployment": info.get("deploymentType", ""), "site": info.get("baseUrl", self.base)}
 
     def _get(self, path: str, **params) -> httpx.Response:
         try:
@@ -195,7 +208,8 @@ class JiraCloudConnector:
 
 
 def get_connector():
-    s = get_settings()
-    if s.jira_mode == "cloud":
-        return JiraCloudConnector()
+    from .settings_svc import get_jira_config
+    cfg = get_jira_config()
+    if cfg["mode"] == "cloud":
+        return JiraCloudConnector(cfg)
     return MockJiraConnector()

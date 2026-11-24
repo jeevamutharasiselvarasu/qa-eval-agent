@@ -4,10 +4,10 @@ import { api } from '../../api.js'
 import { useRun } from '../RunWorkspace.jsx'
 import { Badge, Btn, Card, DataTable, Empty, Ids, Stat, STATUS_COLORS, fmtDate, useAction, useLoad } from '../../components/ui.jsx'
 
-export default function QAReport() {
+export default function QAReport({ refreshKey = 0 }) {
   const { runId, reload: reloadRun } = useRun()
-  const [d, reloadData] = useLoad(() => api.get(`/runs/${runId}/report-data`), [runId])
-  const [reports, reload] = useLoad(() => api.get(`/runs/${runId}/reports`), [runId])
+  const [d, reloadData] = useLoad(() => api.get(`/runs/${runId}/report-data`), [runId, refreshKey])
+  const [reports, reload] = useLoad(() => api.get(`/runs/${runId}/reports`), [runId, refreshKey])
   const [busy, act] = useAction()
   const gen = () => act('gen', async () => { await api.post(`/runs/${runId}/reports`, {}); reload(); reloadData(); reloadRun() }, 'Report generated (Excel, HTML, JSON, Power BI)')
   const dl = (r, fmt) => act(fmt, () => api.download(`/reports/${r.id}/download/${fmt}`, `${runId}_${fmt === 'powerbi' ? 'powerbi_tables.zip' : 'report.' + fmt}`))
@@ -17,7 +17,7 @@ export default function QAReport() {
   return (
     <div className="col">
       <Card title={<div className="row gap-s"><h3>QA report · {s.jira_ticket}</h3><Badge s={s.overall === 'PASS' ? 'PASS' : s.overall === 'NO_EXECUTION' ? '' : s.overall.startsWith('PASS') ? 'BLOCKED' : 'FAIL'}>{s.overall.replaceAll('_', ' ')}</Badge></div>}
-        sub={`Latest finished execution per track: ${s.executions.map(e => `${e.execution_id} (${e.track.toLowerCase()})`).join(', ') || 'none'}`}
+        sub={`${s.selection ? `${s.selection.selected} of ${s.selection.in_pack} test cases run · ` : ''}Executions: ${s.executions.map(e => `${e.execution_id} (${e.track.toLowerCase()})`).join(', ') || 'none'}`}
         actions={<Btn className="primary" icon={FileText} busy={busy === 'gen'} disabled={!s.executions.length} onClick={gen}>Generate report files</Btn>}>
         <div className="grid g6">
           <Stat label="Total tests" value={c.total} />

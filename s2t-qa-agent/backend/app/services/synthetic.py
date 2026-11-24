@@ -24,7 +24,7 @@ from .studio import actual_inputs, run_version
 
 SCENARIOS = ["POSITIVE", "FILTER_EXCLUSION", "NO_MATCH_JOIN", "MULTI_MATCH_JOIN", "DUPLICATE_KEYS", "NULL_KEY",
              "BOUNDARY_ZERO", "DECIMAL_PRECISION", "SPECIAL_CHARACTERS", "EMPTY_RIGHT_SOURCE", "NULL_VALUES", "NEGATIVE_RESULT"]
-RESOLVED = ("CLARIFIED", "ACCEPTED_LIMITATION")
+RESOLVED = ("CLARIFIED",)  # ACCEPTED_LIMITATION: SQL can be generated, dependent scenarios stay BLOCKED
 
 
 @dataclass
@@ -59,7 +59,7 @@ def _fam(t: str) -> str:
 def build_model(db: Session, run_id: str) -> Model:
     srcs = actual_inputs(db, run_id)
     maps = [m for m in db.scalars(select(ColumnMapping).where(ColumnMapping.run_id == run_id)) if m.status == "ACCEPTED"]
-    reqs = {r.id: r for r in db.scalars(select(Requirement).where(Requirement.run_id == run_id)) if r.status != "REJECTED"}
+    reqs = {r.id: r for r in db.scalars(select(Requirement).where(Requirement.run_id == run_id)) if r.status == "ACCEPTED"}
     cols = {a: d.columns for a, d in srcs.items()}
     m = Model(aliases=list(srcs), base=next(iter(srcs)), columns=cols)
     for j in [x for x in maps if x.mapping_type == "JOINED"]:
@@ -307,10 +307,20 @@ def design(m: Model, kind: str, n: int, gen: Gen, gaps: list[RequirementGap], re
     elif kind == "MULTI_MATCH_JOIN":
         if not right:
             return {"skip": "No join rule"}
-        for i in range(nb):
-            r = base_rec(i)
-            right_recs(r[jl], gen.rnd.randint(3, 6))
-        expl.append(f"{nb} {m.base} records each matching 3–6 {right} rows (one-to-many aggregation).")
+        if m.right_unique:
+            # right side is a lookup (unique key in the real data): the realistic "many" side is the base table
+            for i in range(2):
+                shared = gen.key_value(jl)
+                for k in range(gen.rnd.randint(3, 5)):
+                    base_rec(i * 10 + k, **{jl: shared})
+                right_recs(shared, 1)
+            expl.append(f"Groups of 3–5 {m.base} records share one {right} entry ({right} is a lookup with unique keys), "
+                        f"so aggregation and lookup values are exercised across many records.")
+        else:
+            for i in range(nb):
+                r = base_rec(i)
+                right_recs(r[jl], gen.rnd.randint(3, 6))
+            expl.append(f"{nb} {m.base} records each matching 3–6 {right} rows (one-to-many aggregation).")
         req_ids += m.join["req"]
     elif kind == "DUPLICATE_KEYS":
         if not (m.key and bk):
@@ -338,11 +348,14 @@ def design(m: Model, kind: str, n: int, gen: Gen, gaps: list[RequirementGap], re
     elif kind == "BOUNDARY_ZERO":
         if not m.numeric_rules:
             return {"skip": "No numeric derivation"}
-        zero_cols = {c for rule in m.numeric_rules for c in rule["cols"]}
+        zero_cols = {c for rule in m.numeric_rules for c in rule["cols"]
+                     if not (m.filter and c == (m.filter["alias"], m.filter["column"]))}  # keep filter columns passing
+        if not zero_cols:
+            return {"skip": "All numeric inputs are filter columns"}
         for i in range(nb):
             r = base_rec(i, **{c: 0 for a, c in zero_cols if a == m.base})
             if right:
-                right_recs(r[jl], 2, **{c: 0 for a, c in zero_cols if a == right})
+                right_recs(r[jl], per, **{c: 0 for a, c in zero_cols if a == right})
         expl.append("All numeric inputs to derived columns set to 0: " + ", ".join(f"{a}.{c}" for a, c in sorted(zero_cols)))
         req_ids += [x for rule in m.numeric_rules for x in rule["req"]]
     elif kind == "DECIMAL_PRECISION":
@@ -389,12 +402,12 @@ def design(m: Model, kind: str, n: int, gen: Gen, gaps: list[RequirementGap], re
         explicit = bool(re.search(rf"(COALESCE|IFNULL)\(\s*\"?(\w+\"?\.\"?)?{col}\"?\s*,", " ".join(r["expr"] for r in m.numeric_rules), re.I))
         gap_ids = [g.id for g in open_ + resolved]
         if not resolved and not explicit:
-            blocked = (f"Null handling for {alias}.{col} is not specified" + (f" (open gap {', '.join(g.id for g in open_)})" if open_ else
+            blocked = (f"Null handling for {alias}.{col} is not specified" + (f" (gap {', '.join(g.id for g in open_)} not answered)" if open_ else
                                                                             " in Jira") + "; expected output cannot be determined.")
         for i in range(nb):
             r = base_rec(i)
             if right:
-                right_recs(r[jl], 2)
+                right_recs(r[jl], per)
         target = data[alias]
         if target:
             target[0][col] = None
@@ -411,7 +424,7 @@ def design(m: Model, kind: str, n: int, gen: Gen, gaps: list[RequirementGap], re
         gap_ids = [g.id for g in g_all]
         if not any(g.status in RESOLVED for g in g_all):
             blocked = f"Behaviour when {c2} exceeds {c1} (negative {rule['target']}) is not specified" + \
-                      (f" (open gap {', '.join(gap_ids)})" if gap_ids else "")
+                      (f" (gap {', '.join(gap_ids)} not answered)" if gap_ids else "")
         for i in range(nb):
             place(i, {(a1, c1): 50.0, (a2, c2): 80.0})
         expl.append(f"{c2} (80.00) exceeds {c1} (50.00) so {rule['target']} would be negative.")
@@ -433,10 +446,12 @@ def _write(alias_rows: list[dict], schema: pa.Schema, path: Path) -> None:
 def generate(db: Session, run: QARun, actor: str, scenarios: list[str] | None = None, records: int | None = None,
              seed: int | None = None) -> list[SyntheticScenario]:
     v = current_version(db, run.id)
-    st = approval_state(db, run.id)
-    if not v or st["TRANSFORMATION"]["status"] != "APPROVED":
-        raise ValueError("Approve the current transformation version first: synthetic expected targets are produced by "
-                         "executing the approved transformation.")
+    if not v:
+        raise ValueError("Create a transformation first: synthetic expected targets are produced by executing it.")
+    if not (v.validation or {}).get("valid"):
+        raise ValueError("The current transformation version fails validation; fix it before generating synthetic data.")
+    # Expected targets come from the CURRENT version; the test-pack approval requires that this version is the
+    # approved one, and executions refuse scenarios built from any other version.
     s = run.settings or {}
     records = int(records or s.get("synthetic_records_per_scenario", 12))
     seed = int(seed if seed is not None else s.get("synthetic_seed", 42))
@@ -497,6 +512,4 @@ def generate(db: Session, run: QARun, actor: str, scenarios: list[str] | None = 
     set_state(db, run, "SYNTHETIC_DATA_GENERATED", actor)
     audit(db, actor, "SYNTHETIC_GENERATED", run.id, "QA_RUN", run.id, scenarios=len(out), seed=seed, records=records,
           blocked=[s.id for s in out if s.status == "BLOCKED"])
-    from .testgen import generate_synthetic_tests
-    generate_synthetic_tests(db, run, actor)
     return out

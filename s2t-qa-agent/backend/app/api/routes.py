@@ -26,13 +26,15 @@ from ..services import approvals as approval_svc
 from ..services import execution as exec_svc
 from ..services import reports as report_svc
 from ..services import runs as run_svc
-from ..services import studio, synthetic, testgen
+from ..services import studio, synthetic, target_spec, testgen, testpack
 from ..services.datasets import preview_rows
 from ..services.jira import JiraError
 from ..services.transform.engine import validate_definition
 from ..services.transform.contract import TransformationDefinition
 from ..services.transform.visual import VisualSpecError, compile_visual
 
+# DB sessions use scope="function" so each request commits BEFORE its response is sent (a follow-up request from
+# the browser must see the data the previous response reported).
 router = APIRouter(prefix="/api")
 HIDDEN = {"original_path", "parquet_path", "path"}
 
@@ -68,14 +70,17 @@ def wf(fn, *a, **kw):
 @router.get("/meta")
 def meta(p: Principal = Depends(get_principal)):
     s = get_settings()
-    return {"user": p.user, "role": p.role, "jira_mode": s.jira_mode, "llm_mode": s.llm_mode,
+    from ..services.settings_svc import get_jira_config
+    jcfg = get_jira_config()
+    return {"user": p.user, "role": p.role, "jira_mode": jcfg["mode"], "jira_site": jcfg["base_url"] if jcfg["mode"] == "cloud" else "",
+            "llm_mode": s.llm_mode,
             "llm_allow_data_samples": s.llm_allow_data_samples, "workflow_states": WORKFLOW_STATES,
             "exception_states": sorted(EXCEPTION_STATES), "supported_formats": ["csv", "txt", "tsv", "xlsx", "json", "ndjson", "parquet"],
             "transformation_modes": list(studio.MODES), "sql_dialect": "DuckDB", "scenarios": synthetic.SCENARIOS}
 
 
 @router.get("/dashboard")
-def dashboard(db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def dashboard(db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     runs = [r for r in db.scalars(select(QARun).order_by(QARun.created_at.desc())) if p.can_access(r.project)]
     ids = [r.id for r in runs]
     execs = list(db.scalars(select(Execution).where(Execution.run_id.in_(ids)).order_by(Execution.created_at)))
@@ -98,6 +103,65 @@ def dashboard(db: Session = Depends(get_db), p: Principal = Depends(require("vie
             "trend": trend[-30:], "recent_runs": [row(r, {"latest": latest.get(r.id, {})}) for r in runs[:8]]}
 
 
+# ---------------------------------------------------------------- settings (Jira connection)
+class JiraSettingsBody(BaseModel):
+    mode: Literal["mock", "cloud"] = "mock"
+    base_url: str | None = Field(default=None, max_length=300)
+    email: str | None = Field(default=None, max_length=254)
+    api_token: str | None = Field(default=None, max_length=2000)  # write-only; never returned
+    clear_token: bool = False
+    ac_custom_fields: str | list[str] | None = None
+
+
+@router.get("/settings/jira")
+def jira_settings_get(db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
+    from ..services.settings_svc import get_jira_config, public_jira
+    return public_jira(get_jira_config(db))
+
+
+@router.put("/settings/jira")
+def jira_settings_put(body: JiraSettingsBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("admin"))):
+    from ..services.settings_svc import save_jira
+    return wf(save_jira, db, body.model_dump(), p.user)
+
+
+@router.post("/settings/jira/test")
+def jira_settings_test(body: JiraSettingsBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("admin"))):
+    """Test the submitted (or saved) Jira Cloud credentials without saving them."""
+    from ..services.jira import JiraCloudConnector
+    from ..services.settings_svc import merged_jira
+    cfg = wf(merged_jira, db, {**body.model_dump(), "mode": "cloud"})
+    try:
+        info = JiraCloudConnector(cfg).myself()
+    except JiraError as e:
+        hints = {"UNAUTHORIZED": "Check the email and API token (create one at id.atlassian.com → Security → API tokens).",
+                 "NOT_FOUND": "Check the site URL, e.g. https://your-site.atlassian.net.",
+                 "TIMEOUT": "The site did not respond. Check the URL and your network or proxy.",
+                 "UPSTREAM": "Could not reach the site. Check the URL and your network or proxy."}
+        return {"ok": False, "code": e.code, "message": str(e), "hint": hints.get(e.code, "")}
+    audit(db, p.user, "JIRA_CONNECTION_TESTED", None, "SETTINGS", "jira", ok=True, site=cfg["base_url"])
+    return {"ok": True, **info}
+
+
+class TicketBody(BaseModel):
+    jira_key: str = Field(min_length=3, max_length=40)
+
+
+@router.post("/jira/preview")
+def jira_preview(body: TicketBody, p: Principal = Depends(require("analyst"))):
+    """Look up a ticket before creating a run (summary, status and how many acceptance criteria were found)."""
+    from ..services.jira import get_connector
+    from ..services.requirements import collect_units
+    try:
+        doc = get_connector().fetch(body.jira_key)
+    except JiraError as e:
+        raise HTTPException(400 if e.code not in ("TIMEOUT", "UPSTREAM", "RATE_LIMITED") else 502, f"{e.code}: {e}") from e
+    acs, _, comments = collect_units(doc.to_dict())
+    return {"key": doc.key, "source": doc.source, "summary": doc.summary, "status": doc.status, "issue_type": doc.issue_type,
+            "acceptance_criteria": [{"id": u.ac_id, "text": u.text} for u in acs], "comments": len(comments),
+            "attachments": len(doc.attachments), "project": doc.project}
+
+
 # ---------------------------------------------------------------- runs
 class RunCreate(BaseModel):
     jira_key: str = Field(min_length=3, max_length=40)
@@ -107,7 +171,7 @@ class RunCreate(BaseModel):
 
 
 @router.post("/runs")
-def create_run(body: RunCreate, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def create_run(body: RunCreate, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     if not p.can_access(body.project):
         raise HTTPException(403, "No access to project")
     run = wf(run_svc.create_run, db, body.jira_key, p.user, body.project, body.name, body.settings)
@@ -115,7 +179,7 @@ def create_run(body: RunCreate, db: Session = Depends(get_db), p: Principal = De
 
 
 @router.get("/runs")
-def list_runs(q: str = "", status: str = "", db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def list_runs(q: str = "", status: str = "", db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     stmt = select(QARun).order_by(QARun.created_at.desc())
     out = []
     for r in db.scalars(stmt):
@@ -132,13 +196,16 @@ def list_runs(q: str = "", status: str = "", db: Session = Depends(get_db), p: P
 
 
 @router.get("/runs/{run_id}")
-def get_run_detail(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def get_run_detail(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     run = get_run(db, run_id, p)
     c = lambda m, *w: db.scalar(select(func.count()).select_from(m).where(*w))  # noqa: E731
+    spec = target_spec.build_spec(db, run)
     return row(run, {
+        "requirements_ready": spec["ready"],
         "approvals": approval_svc.approval_state(db, run.id),
         "counts": {"requirements": c(Requirement, Requirement.run_id == run.id),
                    "open_gaps": c(RequirementGap, RequirementGap.run_id == run.id, RequirementGap.status == "OPEN"),
+                   "open_items": len(spec["open_items"]), "target_columns": len(spec["columns"]),
                    "sources": c(Dataset, Dataset.run_id == run.id, Dataset.role == "SOURCE"),
                    "targets": c(Dataset, Dataset.run_id == run.id, Dataset.role == "TARGET"),
                    "mappings": c(ColumnMapping, ColumnMapping.run_id == run.id),
@@ -156,7 +223,7 @@ class SettingsBody(BaseModel):
 
 
 @router.put("/runs/{run_id}/settings")
-def update_settings(run_id: str, body: SettingsBody, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def update_settings(run_id: str, body: SettingsBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
     allowed = set(run_svc.DEFAULT_SETTINGS)
     bad = set(body.settings) - allowed
@@ -169,25 +236,27 @@ def update_settings(run_id: str, body: SettingsBody, db: Session = Depends(get_d
 
 # ---------------------------------------------------------------- jira & requirements
 @router.post("/runs/{run_id}/jira/retrieve")
-def jira_retrieve(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def jira_retrieve(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
     try:
         issue = run_svc.retrieve_jira(db, run, p.user)
     except run_svc.WorkflowError as e:
         db.commit()  # persist failure state + error detail
         raise HTTPException(e.status, str(e)) from e
+    if db.scalars(select(ColumnMapping).where(ColumnMapping.run_id == run_id)).first():  # existing run: re-derive
+        _after_change(db, run, p.user)
     return row(issue)
 
 
 @router.get("/runs/{run_id}/jira")
-def jira_get(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def jira_get(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     i = db.scalars(select(JiraIssue).where(JiraIssue.run_id == run_id)).first()
     return row(i) if i else None
 
 
 @router.get("/runs/{run_id}/requirements")
-def requirements(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def requirements(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     i = db.scalars(select(JiraIssue).where(JiraIssue.run_id == run_id)).first()
     return {"requirements": [row(r) for r in db.scalars(select(Requirement).where(Requirement.run_id == run_id).order_by(Requirement.id))],
@@ -202,7 +271,7 @@ class ReqPatch(BaseModel):
 
 
 @router.patch("/runs/{run_id}/requirements/{req_id}")
-def patch_requirement(run_id: str, req_id: str, body: ReqPatch, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def patch_requirement(run_id: str, req_id: str, body: ReqPatch, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     get_run(db, run_id, p)
     r = db.get(Requirement, {"id": req_id, "run_id": run_id})
     if not r:
@@ -231,7 +300,7 @@ class Clarification(BaseModel):
 
 
 @router.post("/runs/{run_id}/requirements/clarifications")
-def clarify(run_id: str, body: Clarification, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def clarify(run_id: str, body: Clarification, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
     g = db.get(RequirementGap, {"id": body.gap_id, "run_id": run_id})
     if not g:
@@ -242,7 +311,96 @@ def clarify(run_id: str, body: Clarification, db: Session = Depends(get_db), p: 
     audit(db, p.user, "GAP_UPDATED", run_id, "REQUIREMENT_GAP", g.id, status=body.status, clarification=body.clarification)
     db.flush()
     run_svc._gap_state(db, run, p.user)
+    if db.scalars(select(ColumnMapping).where(ColumnMapping.run_id == run_id)).first():
+        _after_change(db, run, p.user)
     return row(g)
+
+
+# ---------------------------------------------------------------- target specification (requirements per target column)
+def _after_change(db: Session, run: QARun, actor: str) -> None:
+    """Re-derive the column rules and, when everything is clear, (re)generate the SQL and the test pack."""
+    target_spec.refresh(db, run, actor)
+    target_spec.sync_sql(db, run, actor)
+
+
+@router.get("/runs/{run_id}/target-spec")
+def target_spec_get(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
+    return target_spec.build_spec(db, get_run(db, run_id, p))
+
+
+class GapResolution(BaseModel):
+    status: Literal["OPEN", "CLARIFIED", "ACCEPTED_LIMITATION"] = "CLARIFIED"
+    note: str = Field(default="", max_length=4000)
+
+
+class ColumnRuleBody(BaseModel):
+    expression: str = Field(max_length=4000)
+    note: str = Field(default="", max_length=2000)
+    resolve: dict[str, GapResolution] = Field(default_factory=dict)
+
+
+@router.put("/runs/{run_id}/target-spec/columns/{target}")
+def target_spec_column(run_id: str, target: str, body: ColumnRuleBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
+    run = get_run(db, run_id, p)
+    sync = wf(target_spec.edit_column, db, run, target, body.expression, p.user,
+              {k: v.model_dump() for k, v in body.resolve.items()}, body.note)
+    return {"sync": sync, "spec": target_spec.build_spec(db, run)}
+
+
+class JoinRule(BaseModel):
+    type: str
+    left: str
+    right: str
+    keys: list[str]
+
+
+class FilterRule(BaseModel):
+    dataset: str
+    column: str
+    op: str = "="
+    value: str
+
+
+class TableRulesBody(BaseModel):
+    key: list[str] | None = None
+    joins: list[JoinRule] | None = None
+    filters: list[FilterRule] | None = None
+    defaults: dict[str, str | int | float | None] | None = None
+    resolve: dict[str, GapResolution] = Field(default_factory=dict)
+
+
+@router.put("/runs/{run_id}/target-spec/table-rules")
+def target_spec_table(run_id: str, body: TableRulesBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
+    run = get_run(db, run_id, p)
+    data = body.model_dump()
+    data["resolve"] = {k: v.model_dump() for k, v in body.resolve.items()}
+    sync = wf(target_spec.edit_table, db, run, data, p.user)
+    return {"sync": sync, "spec": target_spec.build_spec(db, run)}
+
+
+class AnswerBody(BaseModel):
+    status: Literal["OPEN", "CLARIFIED", "ACCEPTED_LIMITATION"]
+    note: str = Field(default="", max_length=4000)
+
+
+@router.post("/runs/{run_id}/target-spec/questions/{gap_id}")
+def target_spec_answer(run_id: str, gap_id: str, body: AnswerBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
+    run = get_run(db, run_id, p)
+    sync = wf(target_spec.answer_question, db, run, gap_id, body.status, body.note, p.user)
+    return {"sync": sync, "spec": target_spec.build_spec(db, run)}
+
+
+class SyncBody(BaseModel):
+    force: bool = False
+
+
+@router.post("/runs/{run_id}/target-spec/sync")
+def target_spec_sync(run_id: str, body: SyncBody = SyncBody(), db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
+    """Generate the SQL from the requirements if they are complete (force=True regenerates a hand-edited version)."""
+    run = get_run(db, run_id, p)
+    target_spec.refresh(db, run, p.user)
+    sync = wf(target_spec.sync_sql, db, run, p.user, body.force)
+    return {"sync": sync, "spec": target_spec.build_spec(db, run)}
 
 
 # ---------------------------------------------------------------- datasets
@@ -269,19 +427,19 @@ def _upload(run_id, role, file: UploadFile, label, alias, delimiter, sheet_name,
 
 @router.post("/runs/{run_id}/datasets/sources")
 def upload_source(run_id: str, file: UploadFile = File(...), label: str = Form(""), alias: str = Form(""),
-                  delimiter: str = Form(""), sheet_name: str = Form(""), db: Session = Depends(get_db),
+                  delimiter: str = Form(""), sheet_name: str = Form(""), db: Session = Depends(get_db, scope="function"),
                   p: Principal = Depends(require("analyst"))):
     return _upload(run_id, "SOURCE", file, label, alias, delimiter, sheet_name, db, p)
 
 
 @router.post("/runs/{run_id}/datasets/target")
 def upload_target(run_id: str, file: UploadFile = File(...), label: str = Form(""), delimiter: str = Form(""),
-                  sheet_name: str = Form(""), db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+                  sheet_name: str = Form(""), db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     return _upload(run_id, "TARGET", file, label, "", delimiter, sheet_name, db, p)
 
 
 @router.get("/runs/{run_id}/datasets")
-def datasets(run_id: str, track: str = "", db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def datasets(run_id: str, track: str = "", db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     stmt = select(Dataset).where(Dataset.run_id == run_id).order_by(Dataset.created_at)
     if track:
@@ -295,7 +453,7 @@ class DatasetPatch(BaseModel):
 
 
 @router.patch("/runs/{run_id}/datasets/{ds_id}")
-def patch_dataset(run_id: str, ds_id: str, body: DatasetPatch, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def patch_dataset(run_id: str, ds_id: str, body: DatasetPatch, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     get_run(db, run_id, p)
     d = db.get(Dataset, ds_id)
     if not d or d.run_id != run_id or d.role != "SOURCE":
@@ -305,22 +463,28 @@ def patch_dataset(run_id: str, ds_id: str, body: DatasetPatch, db: Session = Dep
     if body.label is not None:
         d.label = body.label
     audit(db, p.user, "DATASET_UPDATED", run_id, "DATASET", ds_id, feeds_target=d.feeds_target, label=d.label)
+    db.flush()
+    if body.feeds_target is not None and db.scalars(select(ColumnMapping).where(ColumnMapping.run_id == run_id)).first():
+        _after_change(db, get_run(db, run_id, p), p.user)
     return row(d)
 
 
 @router.delete("/runs/{run_id}/datasets/{ds_id}")
-def delete_dataset(run_id: str, ds_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def delete_dataset(run_id: str, ds_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     get_run(db, run_id, p)
     d = db.get(Dataset, ds_id)
     if not d or d.run_id != run_id or d.role not in ("SOURCE", "TARGET"):
         raise HTTPException(404, "Dataset not found")
     db.delete(d)
     audit(db, p.user, "DATASET_REMOVED", run_id, "DATASET", ds_id, role=d.role, fingerprint=d.fingerprint)
+    db.flush()
+    if db.scalars(select(ColumnMapping).where(ColumnMapping.run_id == run_id)).first():
+        _after_change(db, get_run(db, run_id, p), p.user)
     return {"deleted": ds_id}
 
 
 @router.get("/runs/{run_id}/datasets/{ds_id}/preview")
-def dataset_preview(run_id: str, ds_id: str, limit: int = Query(50, le=500), db: Session = Depends(get_db),
+def dataset_preview(run_id: str, ds_id: str, limit: int = Query(50, le=500), db: Session = Depends(get_db, scope="function"),
                     p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     d = db.get(Dataset, ds_id)
@@ -330,7 +494,7 @@ def dataset_preview(run_id: str, ds_id: str, limit: int = Query(50, le=500), db:
 
 
 @router.get("/runs/{run_id}/datasets/{ds_id}/download")
-def dataset_download(run_id: str, ds_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def dataset_download(run_id: str, ds_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     d = db.get(Dataset, ds_id)
     if not d or d.run_id != run_id or d.role in ("SOURCE", "TARGET"):
@@ -351,18 +515,20 @@ def dataset_download(run_id: str, ds_id: str, db: Session = Depends(get_db), p: 
 
 
 @router.post("/runs/{run_id}/profile")
-def profile(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def profile(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
     try:
         profs = run_svc.profile_all(db, run, p.user)
     except run_svc.WorkflowError as e:
         db.commit()
         raise HTTPException(e.status, str(e)) from e
+    if db.scalars(select(ColumnMapping).where(ColumnMapping.run_id == run_id)).first():
+        _after_change(db, run, p.user)
     return [row(x) for x in profs]
 
 
 @router.get("/runs/{run_id}/profiles")
-def profiles(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def profiles(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     out = []
     for d in db.scalars(select(Dataset).where(Dataset.run_id == run_id, Dataset.role.in_(["SOURCE", "TARGET"]))):
@@ -373,13 +539,13 @@ def profiles(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(
 
 # ---------------------------------------------------------------- mappings
 @router.post("/runs/{run_id}/mappings/generate")
-def mappings_generate(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def mappings_generate(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
     return [row(m) for m in wf(run_svc.generate_mappings, db, run, p.user)]
 
 
 @router.get("/runs/{run_id}/mappings")
-def mappings(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def mappings(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     return [row(m) for m in db.scalars(select(ColumnMapping).where(ColumnMapping.run_id == run_id).order_by(ColumnMapping.id))]
 
@@ -395,7 +561,7 @@ class MappingPatch(BaseModel):
 
 
 @router.patch("/runs/{run_id}/mappings/{mapping_id}")
-def patch_mapping(run_id: str, mapping_id: str, body: MappingPatch, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def patch_mapping(run_id: str, mapping_id: str, body: MappingPatch, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     get_run(db, run_id, p)
     m = db.get(ColumnMapping, {"id": mapping_id, "run_id": run_id})
     if not m:
@@ -425,7 +591,7 @@ class MappingCreate(BaseModel):
 
 
 @router.post("/runs/{run_id}/mappings")
-def create_mapping(run_id: str, body: MappingCreate, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def create_mapping(run_id: str, body: MappingCreate, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     get_run(db, run_id, p)
     n = db.scalar(select(func.count()).select_from(ColumnMapping).where(ColumnMapping.run_id == run_id)) + 1
     mid = f"MAP-{n:03d}"
@@ -468,7 +634,7 @@ def _tv(db, run_id, version_id) -> TransformationVersion:
 
 
 @router.get("/runs/{run_id}/transformations")
-def transformations(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def transformations(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     t = approval_svc.primary_transformation(db, run_id)
     st = approval_svc.approval_state(db, run_id)["TRANSFORMATION"]
@@ -482,7 +648,7 @@ def transformations(run_id: str, db: Session = Depends(get_db), p: Principal = D
 
 
 @router.get("/runs/{run_id}/transformations/schema")
-def transformation_schema(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def transformation_schema(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     tgt = db.scalars(select(Dataset).where(Dataset.run_id == run_id, Dataset.role == "TARGET")).first()
     return {"sources": {a: d.columns for a, d in studio.actual_inputs(db, run_id).items()},
@@ -491,25 +657,35 @@ def transformation_schema(run_id: str, db: Session = Depends(get_db), p: Princip
 
 
 @router.post("/runs/{run_id}/transformations/generate")
-def transformation_generate(run_id: str, body: GenBody, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def transformation_generate(run_id: str, body: GenBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
+    if not (body.instruction.strip() and approval_svc.current_version(db, run_id)):
+        spec = target_spec.build_spec(db, run)
+        if not spec["ready"]:
+            raise HTTPException(409, f"The requirements are not complete ({len(spec['open_items'])} open item(s)): "
+                                     + "; ".join(f"{i['ref']}: {i['message']}" for i in spec["open_items"][:5])
+                                     + ". Edit them on the Requirements tab first.")
     v = wf(studio.ai_generate, db, run, body.mode, body.instruction, p.user)
+    if not body.instruction.strip():
+        v.requirements_basis = target_spec.requirements_basis(db, run_id)
     from ..core.common import set_state
     set_state(db, run, "TRANSFORMATION_DESIGNED", p.user)
+    testpack.rebuild_if_built(db, run, p.user)
     return row(v)
 
 
 @router.post("/runs/{run_id}/transformations")
-def transformation_save(run_id: str, body: SaveBody, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def transformation_save(run_id: str, body: SaveBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
     v = wf(studio.save_version, db, run.id, body.mode, body.code, body.visual_spec, "USER_WRITTEN", p.user, body.comment)
     from ..core.common import set_state
     set_state(db, run, "TRANSFORMATION_DESIGNED", p.user)
+    testpack.rebuild_if_built(db, run, p.user)
     return row(v)
 
 
 @router.post("/runs/{run_id}/transformations/validate")
-def transformation_validate_draft(run_id: str, body: CodeBody, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def transformation_validate_draft(run_id: str, body: CodeBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     defn = TransformationDefinition("draft", run_id, body.mode, {a: Path(d.parquet_path) for a, d in studio.actual_inputs(db, run_id).items()},
                                     code=body.code, visual_spec=body.visual_spec)
@@ -517,7 +693,7 @@ def transformation_validate_draft(run_id: str, body: CodeBody, db: Session = Dep
 
 
 @router.post("/runs/{run_id}/transformations/compile-visual")
-def compile_visual_ep(run_id: str, body: CodeBody, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def compile_visual_ep(run_id: str, body: CodeBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     try:
         return {"sql": compile_visual(body.visual_spec or {})}
@@ -526,7 +702,7 @@ def compile_visual_ep(run_id: str, body: CodeBody, db: Session = Depends(get_db)
 
 
 @router.post("/runs/{run_id}/transformations/{version_id}/validate")
-def transformation_validate(run_id: str, version_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def transformation_validate(run_id: str, version_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     v = _tv(db, run_id, version_id)
     return validate_definition(studio.definition(v, run_id, studio.actual_inputs(db, run_id)))
@@ -537,7 +713,7 @@ class PreviewBody(BaseModel):
 
 
 @router.post("/runs/{run_id}/transformations/{version_id}/preview")
-def transformation_preview(run_id: str, version_id: str, body: PreviewBody, db: Session = Depends(get_db),
+def transformation_preview(run_id: str, version_id: str, body: PreviewBody, db: Session = Depends(get_db, scope="function"),
                            p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
     v = _tv(db, run_id, version_id)
@@ -552,7 +728,7 @@ class DecisionBody(BaseModel):
 
 
 @router.post("/runs/{run_id}/transformations/{version_id}/approve")
-def transformation_approve(run_id: str, version_id: str, body: DecisionBody, db: Session = Depends(get_db),
+def transformation_approve(run_id: str, version_id: str, body: DecisionBody, db: Session = Depends(get_db, scope="function"),
                            p: Principal = Depends(require("approver"))):
     get_run(db, run_id, p)
     v = _tv(db, run_id, version_id)
@@ -570,13 +746,15 @@ class RestoreBody(BaseModel):
 
 
 @router.post("/runs/{run_id}/transformations/restore")
-def transformation_restore(run_id: str, body: RestoreBody, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
-    get_run(db, run_id, p)
-    return row(wf(studio.restore_version, db, run_id, body.version, p.user))
+def transformation_restore(run_id: str, body: RestoreBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
+    run = get_run(db, run_id, p)
+    v = wf(studio.restore_version, db, run_id, body.version, p.user)
+    testpack.rebuild_if_built(db, run, p.user)
+    return row(v)
 
 
 @router.post("/runs/{run_id}/transformations/explain")
-def transformation_explain(run_id: str, body: CodeBody, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def transformation_explain(run_id: str, body: CodeBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     run = get_run(db, run_id, p)
     code = body.code
     if body.mode == "VISUAL":
@@ -585,7 +763,7 @@ def transformation_explain(run_id: str, body: CodeBody, db: Session = Depends(ge
 
 
 @router.post("/runs/{run_id}/transformations/fix")
-def transformation_fix(run_id: str, body: CodeBody, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def transformation_fix(run_id: str, body: CodeBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
     return wf(studio.ai_fix, db, run, body.mode, body.code, body.error)
 
@@ -598,13 +776,17 @@ class SynthBody(BaseModel):
 
 
 @router.post("/runs/{run_id}/synthetic-data/generate")
-def synthetic_generate(run_id: str, body: SynthBody, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def synthetic_generate(run_id: str, body: SynthBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
-    return [row(s) for s in wf(synthetic.generate, db, run, p.user, body.scenarios, body.records, body.seed)]
+    out = [row(s) for s in wf(synthetic.generate, db, run, p.user, body.scenarios, body.records, body.seed)]
+    testgen.generate_test_pack(db, run, p.user)
+    db.flush()
+    run.test_pack_basis = testpack.basis(db, run)
+    return out
 
 
 @router.get("/runs/{run_id}/synthetic-data")
-def synthetic_list(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def synthetic_list(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     out = []
     ds = {d.id: d for d in db.scalars(select(Dataset).where(Dataset.run_id == run_id, Dataset.track == "SYNTHETIC"))}
@@ -617,13 +799,16 @@ def synthetic_list(run_id: str, db: Session = Depends(get_db), p: Principal = De
 
 
 @router.post("/runs/{run_id}/test-cases/generate")
-def tests_generate(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def tests_generate(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
-    return [row(t) for t in wf(testgen.generate_actual_tests, db, run, p.user)]
+    out = [row(t) for t in wf(testgen.generate_test_pack, db, run, p.user)]
+    db.flush()
+    run.test_pack_basis = testpack.basis(db, run)
+    return out
 
 
 @router.get("/runs/{run_id}/test-cases")
-def tests_list(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def tests_list(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     tcs = [row(t) for t in db.scalars(select(TestCase).where(TestCase.run_id == run_id).order_by(TestCase.track, TestCase.id))]
     reqs = list(db.scalars(select(Requirement).where(Requirement.run_id == run_id, Requirement.kind == "ACCEPTANCE_CRITERION")))
@@ -644,8 +829,35 @@ class TcPatch(BaseModel):
     excluded: bool | None = None
 
 
+class SelectionBody(BaseModel):
+    only: list[str] | None = None      # select exactly these
+    select: list[str] = Field(default_factory=list)
+    deselect: list[str] = Field(default_factory=list)
+
+
+@router.put("/runs/{run_id}/test-cases/selection")
+def tests_selection(run_id: str, body: SelectionBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
+    """Choose the test cases for the next validation run. Not part of the approved content: no re-approval needed."""
+    get_run(db, run_id, p)
+    tcs = list(db.scalars(select(TestCase).where(TestCase.run_id == run_id)))
+    ids = {t.id for t in tcs}
+    unknown = (set(body.only or []) | set(body.select) | set(body.deselect)) - ids
+    if unknown:
+        raise HTTPException(400, f"Unknown test cases: {', '.join(sorted(unknown)[:10])}")
+    for t in tcs:
+        if body.only is not None:
+            t.selected = t.id in set(body.only)
+        if t.id in body.select:
+            t.selected = True
+        if t.id in body.deselect:
+            t.selected = False
+    n = sum(1 for t in tcs if t.selected)
+    audit(db, p.user, "TEST_SELECTION_CHANGED", run_id, "QA_RUN", run_id, selected=n, total=len(tcs))
+    return {"selected": sorted(t.id for t in tcs if t.selected), "total": len(tcs)}
+
+
 @router.patch("/runs/{run_id}/test-cases/{tc_id}")
-def tests_patch(run_id: str, tc_id: str, body: TcPatch, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def tests_patch(run_id: str, tc_id: str, body: TcPatch, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     get_run(db, run_id, p)
     t = db.get(TestCase, {"id": tc_id, "run_id": run_id})
     if not t:
@@ -668,6 +880,33 @@ def tests_patch(run_id: str, tc_id: str, body: TcPatch, db: Session = Depends(ge
     return row(t)
 
 
+# ---------------------------------------------------------------- test pack (approval 2) and one-click validation
+class ExecBody(BaseModel):
+    force: bool = False
+
+
+@router.get("/runs/{run_id}/test-pack")
+def test_pack_status(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
+    return testpack.status(db, get_run(db, run_id, p))
+
+
+@router.post("/runs/{run_id}/test-pack")
+def test_pack_build(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
+    return wf(testpack.build, db, get_run(db, run_id, p), p.user)
+
+
+@router.post("/runs/{run_id}/test-pack/approve")
+def test_pack_approve(run_id: str, body: DecisionBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("approver"))):
+    return wf(testpack.approve, db, get_run(db, run_id, p), p.user, body.decision, body.reason)
+
+
+@router.post("/runs/{run_id}/run-validation")
+def run_validation(run_id: str, body: ExecBody = ExecBody(), db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
+    run = get_run(db, run_id, p)
+    execs = wf(testpack.start_validation, db, run, p.user, body.force)
+    return [row(e) for e in execs]
+
+
 # ---------------------------------------------------------------- approvals
 class ApprovalBody(BaseModel):
     artifact_type: str
@@ -677,7 +916,7 @@ class ApprovalBody(BaseModel):
 
 
 @router.get("/runs/{run_id}/approvals")
-def approvals_get(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def approvals_get(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     from ..models import Approval
     return {"state": approval_svc.approval_state(db, run_id), "required": approval_svc.REQUIRED,
@@ -685,7 +924,7 @@ def approvals_get(run_id: str, db: Session = Depends(get_db), p: Principal = Dep
 
 
 @router.post("/runs/{run_id}/approvals")
-def approvals_post(run_id: str, body: ApprovalBody, db: Session = Depends(get_db), p: Principal = Depends(require("approver"))):
+def approvals_post(run_id: str, body: ApprovalBody, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("approver"))):
     run = get_run(db, run_id, p)
     if body.artifact_type == "TRANSFORMATION":
         v = approval_svc.current_version(db, run_id)
@@ -707,10 +946,6 @@ def approvals_post(run_id: str, body: ApprovalBody, db: Session = Depends(get_db
 
 
 # ---------------------------------------------------------------- execution
-class ExecBody(BaseModel):
-    force: bool = False
-
-
 def _start(run_id, track, body, db, p):
     run = get_run(db, run_id, p)
     ex, reused = wf(exec_svc.start, db, run, track, p.user, body.force)
@@ -721,17 +956,17 @@ def _start(run_id, track, body, db, p):
 
 
 @router.post("/runs/{run_id}/execute/actual")
-def execute_actual(run_id: str, body: ExecBody = ExecBody(), db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def execute_actual(run_id: str, body: ExecBody = ExecBody(), db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     return _start(run_id, "ACTUAL", body, db, p)
 
 
 @router.post("/runs/{run_id}/execute/synthetic")
-def execute_synthetic(run_id: str, body: ExecBody = ExecBody(), db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def execute_synthetic(run_id: str, body: ExecBody = ExecBody(), db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     return _start(run_id, "SYNTHETIC", body, db, p)
 
 
 @router.get("/runs/{run_id}/executions")
-def executions(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def executions(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     out = []
     for e in db.scalars(select(Execution).where(Execution.run_id == run_id).order_by(Execution.created_at.desc())):
@@ -750,7 +985,7 @@ def _exec(db, execution_id, p) -> Execution:
 
 
 @router.get("/executions/{execution_id}")
-def execution_detail(execution_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def execution_detail(execution_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     e = _exec(db, execution_id, p)
     tcs = {t.id: t for t in db.scalars(select(TestCase).where(TestCase.run_id == e.run_id, TestCase.track == e.track))}
     res = list(db.scalars(select(TestResult).where(TestResult.execution_id == e.id)))
@@ -774,7 +1009,7 @@ def execution_detail(execution_id: str, db: Session = Depends(get_db), p: Princi
 
 
 @router.post("/executions/{execution_id}/retry")
-def execution_retry(execution_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def execution_retry(execution_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     e = _exec(db, execution_id, p)
     wf(exec_svc.retry, db, e, p.user)
     db.commit()
@@ -783,7 +1018,7 @@ def execution_retry(execution_id: str, db: Session = Depends(get_db), p: Princip
 
 
 @router.post("/executions/{execution_id}/cancel")
-def execution_cancel(execution_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def execution_cancel(execution_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     e = _exec(db, execution_id, p)
     wf(exec_svc.cancel, db, e, p.user)
     if e.status == "QUEUED":
@@ -792,7 +1027,7 @@ def execution_cancel(execution_id: str, db: Session = Depends(get_db), p: Princi
 
 
 @router.post("/executions/{execution_id}/analyze")
-def execution_analyze(execution_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def execution_analyze(execution_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     e = _exec(db, execution_id, p)
     if e.status in ("QUEUED", "RUNNING"):
         raise HTTPException(409, "Failure analysis runs only after deterministic execution finishes")
@@ -800,7 +1035,7 @@ def execution_analyze(execution_id: str, db: Session = Depends(get_db), p: Princ
 
 
 @router.get("/executions/{execution_id}/evidence/{evidence_id}")
-def evidence_download(execution_id: str, evidence_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def evidence_download(execution_id: str, evidence_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     e = _exec(db, execution_id, p)
     ev = db.get(Evidence, evidence_id)
     if not ev or ev.execution_id != e.id or not ev.path:
@@ -809,7 +1044,7 @@ def evidence_download(execution_id: str, evidence_id: str, db: Session = Depends
 
 
 @router.get("/compare")
-def compare(a: str, b: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def compare(a: str, b: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     ea, eb = _exec(db, a, p), _exec(db, b, p)
     ra = {r.test_case_id: r.status for r in db.scalars(select(TestResult).where(TestResult.execution_id == ea.id))}
     rb = {r.test_case_id: r.status for r in db.scalars(select(TestResult).where(TestResult.execution_id == eb.id))}
@@ -823,26 +1058,32 @@ class ReportBody(BaseModel):
 
 
 @router.post("/runs/{run_id}/reports")
-def report_generate(run_id: str, body: ReportBody = ReportBody(), db: Session = Depends(get_db), p: Principal = Depends(require("analyst"))):
+def report_generate(run_id: str, body: ReportBody = ReportBody(), db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("analyst"))):
     run = get_run(db, run_id, p)
     return row(wf(report_svc.generate, db, run, p.user, body.execution_ids), {"files": None})
 
 
 @router.get("/runs/{run_id}/reports")
-def reports_list(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def reports_list(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     return [row(r, {"files": sorted((r.files or {}).keys())}) for r in
             db.scalars(select(Report).where(Report.run_id == run_id).order_by(Report.created_at.desc()))]
 
 
 @router.get("/runs/{run_id}/report-data")
-def report_data(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def report_data(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     run = get_run(db, run_id, p)
+    # show what the latest validation run covered (its selected tests), not a mix of older executions
+    last = db.scalars(select(Report).where(Report.run_id == run_id).order_by(Report.created_at.desc())).first()
+    newest = db.scalars(select(Execution).where(Execution.run_id == run_id, Execution.status.not_in(["QUEUED", "RUNNING"]))
+                        .order_by(Execution.created_at.desc())).first()
+    if last and newest and newest.id in (last.execution_ids or []):
+        return report_svc.collect(db, run, last.execution_ids)
     return report_svc.collect(db, run)
 
 
 @router.get("/reports/{report_id}/download/{fmt}")
-def report_download(report_id: str, fmt: Literal["json", "html", "xlsx", "powerbi"], inline: bool = False, db: Session = Depends(get_db),
+def report_download(report_id: str, fmt: Literal["json", "html", "xlsx", "powerbi"], inline: bool = False, db: Session = Depends(get_db, scope="function"),
                     p: Principal = Depends(require("viewer"))):
     r = db.get(Report, report_id)
     if not r:
@@ -860,13 +1101,13 @@ def report_download(report_id: str, fmt: Literal["json", "html", "xlsx", "powerb
 
 
 @router.get("/runs/{run_id}/traceability")
-def traceability(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def traceability(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     run = get_run(db, run_id, p)
     ids = [e.id for e in db.scalars(select(Execution).where(Execution.run_id == run_id))]
     return report_svc.build_traceability(db, run, ids)
 
 
 @router.get("/runs/{run_id}/audit")
-def audit_log(run_id: str, db: Session = Depends(get_db), p: Principal = Depends(require("viewer"))):
+def audit_log(run_id: str, db: Session = Depends(get_db, scope="function"), p: Principal = Depends(require("viewer"))):
     get_run(db, run_id, p)
     return [row(a) for a in db.scalars(select(AuditLog).where(AuditLog.run_id == run_id).order_by(AuditLog.id.desc()).limit(500))]

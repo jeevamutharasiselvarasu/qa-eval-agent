@@ -62,6 +62,83 @@ hashed. An approval is valid only while the current hash equals the approved has
 change, mapping edit, gap clarification or tolerance tweak, turns the approval **STALE**, and execution is refused
 until someone re-approves. Every decision is stored with reviewer, timestamp, version and reason.
 
+In the UI these are grouped into **two decisions**:
+* **Approval 1** is the TRANSFORMATION.
+* **Approval 2**, the *test pack*, approves the other six artifacts in one step. It is accepted only when the
+  transformation is approved and the pack is current: the pack's basis hash covers requirements, datasets, mappings
+  and the transformation version.
+
+AI-suggested requirements and proposed mappings no longer block approval. Anything nobody accepted is simply left
+out of the pack, and the review screen lists it.
+
+### Requirements per target column, and the SQL gate
+`services/target_spec.py` presents the requirements as a target specification:
+* **Per target column:** the source columns, the rule (the default for unmatched records is shown separately), its
+  origin (Jira, edited or suggested) and its status: CLEAR, MISSING, SUGGESTED, QUESTION or INVALID.
+* **Table rules:** key, joins, filters and defaults.
+
+**Open items** are anything that is not CLEAR, a missing key, several sources with no join, or an unanswered question.
+
+**SQL gate.** `sync_sql` generates the SQL only when there are no open items. It runs after every edit, Jira
+re-retrieval, profiling or dataset change, and the test pack is built after it.
+* `/transformations/generate` and the test-pack build refuse to run while items are open (an instruction-based edit
+  of existing code is still allowed).
+* Generated versions store `requirements_basis`. A requirements-generated version is regenerated when the rules
+  change.
+* A hand-written or hand-edited version is never overwritten; it is flagged `MANUAL_OUTDATED` and can be regenerated
+  on request.
+
+**In-app edits.**
+* Every edit is stored as a USER_CONFIRMED requirement. `apply_overrides` marks the Jira rule for the same column or
+  table rule as SUPERSEDED, and re-applies this after re-analysis.
+* Questions that an edit answers structurally (no key, no join, precision, conflict) are closed automatically.
+* An edit keeps the AC id of the rule it replaces, so tests stay grouped by acceptance criterion.
+
+**ACCEPTED_LIMITATION** unblocks SQL generation, but dependent tests and scenarios stay BLOCKED. Only CLARIFIED makes
+them run against the rule.
+
+**UI changes.** The Mappings tab was merged into Requirements, and the Data tab now lists only the files (column
+profiling still runs in the background for the null checks).
+
+### Test pack (positive / negative / edge)
+`services/testpack.py` builds the pack: draft transformation (if none) → synthetic scenarios → `testgen.generate_test_pack`.
+* Tests are grouped by acceptance criterion with IDs `TC-AC<n>-NN`. General checks use `TC-GEN-NN`.
+* Each test is typed POSITIVE, NEGATIVE, EDGE or GENERAL, and runs on either the uploaded data (ACTUAL) or a
+  synthetic scenario (SYNTHETIC).
+* Synthetic tests use the **RULE_ORACLE** check:
+  * Each approved mapping rule is compiled independently over the `src_<alias>` views.
+  * The result is compared with the transformation's output, so a transformation bug cannot hide behind its own
+    expected snapshot.
+* A scenario affected by an open gap is BLOCKED with the gap ID.
+* An acceptance criterion that cannot be parsed into tests gets a BLOCKED manual test, so coverage gaps stay visible.
+* `POST /runs/{id}/run-validation` runs both tracks and generates the report.
+
+### Transformation-logic tests and test selection
+`services/logic_tests.py` parses the current transformation SQL with sqlglot. Visual mode is parsed from its compiled
+SQL; Python mode gets no logic tests, and the test-pack status says why. It generates group TL tests
+(basis TRANSFORMATION_LOGIC), each with a rationale quoting the SQL fragment:
+* **VALUE_PROPERTY checks**, from the guarantees of the outermost functions of each output column: UPPER, LOWER,
+  TRIM, ROUND(n), COALESCE with a literal fallback, COUNT, ABS, LEFT/SUBSTRING length, and CASE allowed values.
+* **COLUMN_MATCH** for output columns that no acceptance criterion covers.
+* **Joins:** KEY_COVERAGE for a LEFT JOIN; KEY_SUBSET for an INNER JOIN or a base-table filter.
+* **GROUP BY:** KEY_UNIQUE (one row per group).
+
+**Selection.** `TestCase.selected` is not part of the TEST_CASES approval hash, so choosing tests needs no
+re-approval.
+* Selection is preserved across pack rebuilds, because test IDs are stable.
+* `PUT /runs/{id}/test-cases/selection` takes `only`, `select` and `deselect`.
+* Each execution snapshots `selected_test_ids` and runs only those; the idempotency key includes the selection.
+* `run-validation` starts only the tracks that have selected tests, and the report covers exactly those results
+  (`summary.selection`).
+
+### Jira connection settings
+The `AppSetting` table stores the Jira mode, URL and e-mail address. The API token is Fernet-encrypted (`core/secrets.py`).
+* The key comes from `QA_SECRET_KEY`, otherwise from `<storage>/.secret.key` (mode 0600).
+* The API never returns the token, only `token_set`.
+* The URL must be https with no path. Loopback, link-local, multicast and unspecified hosts are refused.
+* `POST /settings/jira/test` calls `/rest/api/3/myself`. Saved settings take priority over the environment variables.
+* Tested against simulated Jira responses only, not a live site.
+
 ### Execution, recovery and audit
 * An idempotency key is built from the code hash, dataset fingerprints, approval hashes and settings. An identical
   completed execution is reused unless *force* is set. A second concurrent execution on the same track is refused.
@@ -86,7 +163,8 @@ Exception states (`JIRA_RETRIEVAL_FAILED`, `REQUIREMENT_GAP`, `DATASET_PARSE_FAI
 `POST /api/runs/{id}/requirements/clarifications`, `POST /api/runs/{id}/datasets/sources|target`, `POST /api/runs/{id}/profile`,
 `POST /api/runs/{id}/mappings/generate`, `PATCH /api/runs/{id}/mappings/{mid}`, `POST /api/runs/{id}/transformations[/generate|/validate|/explain|/fix|/restore]`,
 `POST /api/runs/{id}/transformations/{vid}/preview|approve`, `POST /api/runs/{id}/synthetic-data/generate`,
-`POST /api/runs/{id}/test-cases/generate`, `POST /api/runs/{id}/approvals`, `POST /api/runs/{id}/execute/actual|synthetic`,
+`POST /api/runs/{id}/test-pack[/approve]`, `GET /api/runs/{id}/test-pack`, `POST /api/runs/{id}/run-validation`,
+`GET|PUT /api/settings/jira`, `POST /api/settings/jira/test`, `POST /api/jira/preview`, `POST /api/runs/{id}/approvals`, `POST /api/runs/{id}/execute/actual|synthetic`,
 `GET /api/executions/{eid}`, `POST /api/executions/{eid}/retry|cancel`, `GET /api/compare?a=&b=`,
 `POST /api/runs/{id}/reports`, `GET /api/reports/{rid}/download/{json|html|xlsx|powerbi}`, `GET /api/runs/{id}/traceability|audit`.
 Interactive docs are at `/docs`.
@@ -145,9 +223,8 @@ these defects, which are now fixed and covered by `tests/test_round2_regressions
 
 
 ### Honest limitations to know
-* Synthetic Track B compares a re-execution against the **approved expected snapshot** and applies rule-derived
-  checks (unique and not-null keys, join coverage, default values). The expected values are what the approved
-  transformation produces, so reviewers must check them by hand in the Synthetic Data Studio (for example the
-  DECIMAL_PRECISION scenario: half-up of 10.005).
+* Synthetic Track B checks the transformation against an independent rule oracle compiled from the approved mapping
+  rules. A rule the mapping text doesn't express well (complex CASE logic or window functions) produces a BLOCKED
+  test that needs manual review rather than an automatic pass. The oracle is only as correct as the approved mappings.
 * A filter on the right side of a LEFT JOIN is placed **before** the join in AI drafts, and this is recorded as an
   explicit assumption in the code comment and version note for review.
