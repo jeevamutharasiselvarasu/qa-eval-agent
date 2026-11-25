@@ -264,6 +264,83 @@ def _recon(ctx: ValidationContext, spec: dict, direction: str) -> CheckOutcome:
     )
 
 
+def compare_targets(expected: Path, actual: Path, keys: list[str], limit: int = 2000) -> dict:
+    """Column-by-column comparison of the expected target with the uploaded target, independent of any test case.
+
+    Records are matched on the business key (keys that occur more than once on either side are left out, since they
+    cannot be matched one-to-one). Every column present in both tables, other than the key, is compared once.
+    Returns {"keys", "columns": [{column, compared, differences}], "differences": [one row per record and column],
+    "total_differences", "truncated", "duplicate_keys_excluded"}."""
+    ctx = ValidationContext(expected, actual, {})
+    try:
+        ek, ak = [], []
+        for k in keys:
+            e, a = ctx.col("expected", k), ctx.col("actual", k)
+            if not e or not a:
+                raise CheckError(f"Key column '{k}' not found in both targets")
+            ek.append(e)
+            ak.append(a)
+        if not ek:
+            raise CheckError("No business key, so records cannot be matched")
+
+        def unique(t, kl):
+            cols = ", ".join(q(k) for k in kl)
+            return f"(SELECT * FROM {t} WHERE ({cols}) IN (SELECT ({cols}) FROM {t} GROUP BY ALL HAVING COUNT(*) = 1))"
+
+        join = f"FROM {unique('expected', ek)} e JOIN {unique('actual', ak)} a ON {_key_join(ek, ak)}"
+        compared = ctx.one(f"SELECT COUNT(*) {join}")[0]
+        excluded = ctx.one(
+            f"SELECT (SELECT COUNT(*) FROM expected) - (SELECT COUNT(*) FROM {unique('expected', ek)}) + "
+            f"(SELECT COUNT(*) FROM actual) - (SELECT COUNT(*) FROM {unique('actual', ak)})"
+        )[0]
+        key_upper = {k.upper() for k in ek}
+        acols = {c.upper(): c for c in ctx.cols("actual")}
+        keysel = " || '|' || ".join(f"COALESCE(CAST(e.{q(k)} AS VARCHAR), '')" for k in ek)
+        per_col, parts = [], []
+        for ec, etype in ctx.cols("expected").items():
+            if ec.upper() in key_upper or ec.upper() not in acols:
+                continue
+            ac = acols[ec.upper()]
+            ev, av = f"e.{q(ec)}", f"a.{q(ac)}"
+            fam = _family(etype)
+            if fam == "numeric":
+                avn = f"TRY_CAST({av} AS DOUBLE)"
+                mismatch = (
+                    f"NOT (({ev} IS NULL AND {av} IS NULL) OR ({ev} IS NOT NULL AND {avn} IS NOT NULL AND "
+                    f"ABS(CAST({ev} AS DOUBLE) - {avn}) <= 1e-9))"
+                )
+                diff = f"ROUND({avn} - CAST({ev} AS DOUBLE), 6)"
+            else:
+
+                def norm(x, fam=fam):
+                    x = f"CAST({x} AS VARCHAR)"
+                    return f"CAST(TRY_CAST({x} AS TIMESTAMP) AS VARCHAR)" if fam == "temporal" else x
+
+                mismatch = f"NOT ({norm(ev)} IS NOT DISTINCT FROM {norm(av)})"
+                diff = "NULL"
+            n = ctx.one(f"SELECT COUNT(*) {join} WHERE {mismatch}")[0]
+            per_col.append({"column": ec, "compared": compared, "differences": n})
+            if n:
+                parts.append(
+                    f'SELECT {keysel} AS business_key, {lit(ec)} AS "column", CAST({ev} AS VARCHAR) AS expected, '
+                    f"CAST({av} AS VARCHAR) AS actual, CAST({diff} AS DOUBLE) AS difference {join} WHERE {mismatch}"
+                )
+        rows = []
+        if parts:
+            _, rows = ctx.rows(f'SELECT * FROM ({" UNION ALL ".join(parts)}) ORDER BY business_key, "column" LIMIT {limit}')
+        total = sum(c["differences"] for c in per_col)
+        return {
+            "keys": ek,
+            "columns": per_col,
+            "differences": rows,
+            "total_differences": total,
+            "truncated": total > len(rows),
+            "duplicate_keys_excluded": excluded,
+        }
+    finally:
+        ctx.close()
+
+
 def check_column_match(ctx: ValidationContext, spec: dict) -> CheckOutcome:
     E = spec.get("expected_table", "expected")
     ek, ak = _keys(ctx, spec, E), _keys(ctx, spec, "actual")

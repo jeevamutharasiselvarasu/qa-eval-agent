@@ -69,9 +69,15 @@ DATA = {
         },
     ],
     "reconciliation": {"missing_records": 0, "extra_records": 1},
-    "column_differences": [
-        {"test_case_id": "TC-AC1-01", "business_key": "C1", "column": "NAME", "expected": "ANITA", "actual": "Anita", "difference": None}
-    ],
+    "column_comparison": {
+        "status": "OK",
+        "keys": ["CUSTOMER_ID"],
+        "columns": [{"column": "NAME", "compared": 3, "differences": 1}, {"column": "AMT", "compared": 3, "differences": 0}],
+        "total_differences": 1,
+        "truncated": False,
+        "duplicate_keys_excluded": 0,
+    },
+    "column_differences": [{"business_key": "C1", "column": "NAME", "expected": "ANITA", "actual": "Anita", "difference": None}],
     "failure_analysis": [
         {
             "test_case_id": "TC-AC1-01",
@@ -175,6 +181,7 @@ def test_excel_workbook_has_a_summary_and_formatted_tables(tmp_path):
         "Acceptance criteria",
         "Test results",
         "Column differences",
+        "Columns compared",
         "Reconciliation",
         "Failure analysis",
         "Column rules",
@@ -197,3 +204,22 @@ def test_excel_empty_sheet_says_so(tmp_path):
     path = tmp_path / "r.xlsx"
     render_xlsx(d, path)
     assert load_workbook(path)["Column differences"]["A1"].value == "No rows."
+
+
+def test_column_differences_come_from_the_table_comparison_not_the_tests(tmp_path):
+    out = render_html(DATA)
+    assert "compared with the uploaded target on 3 record(s) matched by CUSTOMER_ID, across 2 column(s)" in out
+    assert "1 difference found" in out
+    path = tmp_path / "r.xlsx"
+    render_xlsx(DATA, path)
+    wb = load_workbook(path)
+    assert [c.value for c in wb["Column differences"][1]][:2] == ["Business key", "Column"]
+    assert [[c.value for c in r] for r in wb["Columns compared"].iter_rows(min_row=2)] == [["NAME", 3, 1, "FAIL"], ["AMT", 3, 0, "PASS"]]
+
+
+def test_comparison_not_run_is_explained():
+    d = copy.deepcopy(DATA)
+    d["column_comparison"] = {"status": "ERROR", "message": "No business key, so records cannot be matched"}
+    d["column_differences"] = []
+    out = render_html(d)
+    assert "No business key, so records cannot be matched" in out and "By column" not in out

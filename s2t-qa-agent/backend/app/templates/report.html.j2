@@ -100,8 +100,13 @@
   {{ table(reconciliation, [('measure', 'Measure'), ('value', 'Value')], 'Reconciliation tests were not selected for this run.', 'num') }}
 
   {{ h2('differences', 'Column differences') }}
-  <p class="lead">Record-level differences between the expected and the uploaded target (sample).</p>
-  {{ table(data.column_differences, [('test_case_id', 'Test'), ('business_key', 'Business key'), ('column', 'Column'), ('expected', 'Expected'),
+  <p class="lead">{{ comparison_text }}</p>
+  {%- if comparison_columns %}
+  <h3>By column</h3>
+  {{ table(comparison_columns, [('column', 'Column'), ('compared', 'Records compared'), ('differences', 'Differences'), ('status', 'Result')], '', 'num') }}
+  <h3>By record</h3>
+  {%- endif %}
+  {{ table(data.column_differences, [('business_key', 'Business key'), ('column', 'Column'), ('expected', 'Expected'),
                                      ('actual', 'Uploaded target'), ('difference', 'Difference')], 'No column differences.') }}
 
   {{ h2('analysis', 'Failure analysis') }}

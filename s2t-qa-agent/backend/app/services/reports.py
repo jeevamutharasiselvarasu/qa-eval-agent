@@ -17,7 +17,6 @@ from ..models import (
     AuditLog,
     ColumnMapping,
     Dataset,
-    Evidence,
     Execution,
     FailureAnalysis,
     JiraIssue,
@@ -31,6 +30,7 @@ from ..models import (
 )
 from .approvals import approval_state
 from .report_render import render_html, render_xlsx
+from .validation import CheckError, compare_targets
 
 
 def _iso(d):
@@ -88,6 +88,28 @@ def build_traceability(db: Session, run: QARun, execution_ids: list[str]) -> lis
     return rows
 
 
+def _business_key(db: Session, run: QARun) -> list[str]:
+    reqs = [r for r in db.scalars(select(Requirement).where(Requirement.run_id == run.id)) if r.status == "ACCEPTED"]
+    keyreq = [r for r in reqs if r.kind == "BUSINESS_KEY"] or [r for r in reqs if r.kind == "UNIQUE_KEY"]
+    if keyreq:
+        return list(keyreq[0].spec.get("columns", []))
+    maps = db.scalars(select(ColumnMapping).where(ColumnMapping.run_id == run.id))
+    return [m.target_column for m in maps if m.status == "ACCEPTED" and m.is_key and m.target_column]
+
+
+def _compare(db: Session, run: QARun, expected: Dataset | None, target: Dataset | None) -> dict:
+    """Column differences between the expected and the uploaded target: computed once from the two tables,
+    not from the test results, so each record and column appears at most once."""
+    if not expected or not target or not Path(expected.parquet_path).exists() or not Path(target.parquet_path).exists():
+        return {"status": "NOT_RUN", "message": "The expected or the uploaded target is not available.", "columns": [], "differences": []}
+    keys = _business_key(db, run)
+    try:
+        out = compare_targets(Path(expected.parquet_path), Path(target.parquet_path), keys)
+    except CheckError as ex:
+        return {"status": "ERROR", "message": str(ex), "columns": [], "differences": []}
+    return {"status": "OK", "message": "", **out}
+
+
 def collect(db: Session, run: QARun, execution_ids: list[str] | None = None) -> dict:
     execs = list(db.scalars(select(Execution).where(Execution.run_id == run.id).order_by(Execution.created_at.desc())))
     if execution_ids:
@@ -101,7 +123,6 @@ def collect(db: Session, run: QARun, execution_ids: list[str] | None = None) -> 
     ex_ids = [e.id for e in execs]
     tcs = {t.id: t for t in db.scalars(select(TestCase).where(TestCase.run_id == run.id))}
     results = list(db.scalars(select(TestResult).where(TestResult.execution_id.in_(ex_ids))))
-    evidence = {e.id: e for e in db.scalars(select(Evidence).where(Evidence.execution_id.in_(ex_ids)))}
     fa = list(db.scalars(select(FailureAnalysis).where(FailureAnalysis.execution_id.in_(ex_ids))))
     jira = db.scalars(select(JiraIssue).where(JiraIssue.run_id == run.id)).first()
     datasets = list(db.scalars(select(Dataset).where(Dataset.run_id == run.id)))
@@ -126,6 +147,7 @@ def collect(db: Session, run: QARun, execution_ids: list[str] | None = None) -> 
         else ("FAIL" if tot["FAIL"] else "ERROR" if tot["ERROR"] else "PASS_WITH_BLOCKED" if tot["BLOCKED"] else "PASS")
     )
     recon = {}
+    comparison = {"status": "NOT_RUN", "message": "The expected target has not been built yet.", "columns": [], "differences": []}
     for e in execs:
         if e.track == "ACTUAL":
             m = {tcs[r.test_case_id].validation.get("type"): r.metrics for r in results if r.execution_id == e.id}
@@ -133,11 +155,8 @@ def collect(db: Session, run: QARun, execution_ids: list[str] | None = None) -> 
             tgt = next((d for d in datasets if d.role == "TARGET"), None)
             missing = (m.get("RECON_MISSING") or {}).get("count")
             extra = (m.get("RECON_EXTRA") or {}).get("count")
-            mism = sum(
-                (r.metrics or {}).get("mismatches", 0)
-                for r in results
-                if r.execution_id == e.id and tcs[r.test_case_id].validation.get("type") == "COLUMN_MATCH"
-            )
+            comparison = _compare(db, run, exp_ds, tgt)
+            mism = comparison["total_differences"] if comparison.get("status") == "OK" else None
             recon = {
                 "generated_expected_count": exp_ds.row_count if exp_ds else None,
                 "uploaded_target_count": tgt.row_count if tgt else None,
@@ -146,23 +165,6 @@ def collect(db: Session, run: QARun, execution_ids: list[str] | None = None) -> 
                 "mismatched_values": mism,
                 "matching_records": (exp_ds.row_count - (missing or 0)) if exp_ds and missing is not None else None,
             }
-    col_diffs = []
-    for r in results:
-        tc = tcs[r.test_case_id]
-        if tc.validation.get("type") == "COLUMN_MATCH" and r.status == "FAIL" and r.evidence_id in evidence:
-            keys = tc.validation.get("keys", [])
-            for row in evidence[r.evidence_id].sample:
-                col_diffs.append(
-                    {
-                        "test_case_id": tc.id,
-                        "execution_id": r.execution_id,
-                        "business_key": "|".join(str(row.get(k)) for k in keys),
-                        "column": row.get("column_name"),
-                        "expected": row.get("expected"),
-                        "actual": row.get("actual"),
-                        "difference": row.get("difference"),
-                    }
-                )
     st = approval_state(db, run.id)
     approvals = [
         {
@@ -261,7 +263,8 @@ def collect(db: Session, run: QARun, execution_ids: list[str] | None = None) -> 
             }
             for r in sorted(results, key=lambda x: x.test_case_id)
         ],
-        "column_differences": mask_records(col_diffs),
+        "column_comparison": {k: v for k, v in comparison.items() if k != "differences"},
+        "column_differences": mask_records(comparison.get("differences") or []),
         "failure_analysis": [
             {"test_case_id": f.test_case_id, "execution_id": f.execution_id, "provider": f.provider, **f.payload} for f in fa
         ],

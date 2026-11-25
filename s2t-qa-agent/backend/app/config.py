@@ -51,6 +51,12 @@ class Settings:
     # Upload limits
     max_upload_bytes: int = field(default_factory=lambda: _int("QA_MAX_UPLOAD_BYTES", 200 * 1024 * 1024))
 
+    # Azure Blob / ADLS Gen2 paths (read with the machine identity: az login, managed identity or AZURE_* variables)
+    blob_allowed_accounts: list[str] = field(
+        default_factory=lambda: [a.strip().lower() for a in os.getenv("QA_BLOB_ALLOWED_ACCOUNTS", "").split(",") if a.strip()]
+    )
+    blob_max_files: int = field(default_factory=lambda: _int("QA_BLOB_MAX_FILES", 500))
+
     # Execution limits
     sql_timeout_s: int = field(default_factory=lambda: _int("QA_SQL_TIMEOUT_S", 60))
     sql_memory_limit: str = field(default_factory=lambda: os.getenv("QA_SQL_MEMORY_LIMIT", "1GB"))

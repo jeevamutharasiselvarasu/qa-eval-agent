@@ -17,3 +17,5 @@ pytest==9.1.1
 pytest-cov==7.1.0
 ruff==0.16.9
 cryptography==50.0.1
+azure-identity==1.25.1
+azure-storage-blob==12.27.1

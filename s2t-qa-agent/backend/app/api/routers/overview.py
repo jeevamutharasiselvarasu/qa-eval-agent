@@ -36,6 +36,7 @@ def meta(p: CurrentUser):
         "llm_allow_data_samples": s.llm_allow_data_samples,
         "workflow_states": WORKFLOW_STATES,
         "exception_states": sorted(EXCEPTION_STATES),
+        "blob_storage": {"provider": "azure", "auth": "machine identity", "allowed_accounts": s.blob_allowed_accounts},
         "supported_formats": ["csv", "txt", "tsv", "xlsx", "json", "ndjson", "parquet"],
         "transformation_modes": list(studio.MODES),
         "sql_dialect": "DuckDB",

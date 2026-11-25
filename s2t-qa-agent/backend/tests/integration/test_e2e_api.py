@@ -51,6 +51,12 @@ def test_full_actual_track_finds_planted_defects(client):
     trace = {t["acceptance_criterion"]: t for t in data["traceability"]}
     assert trace["AC5"]["coverage"] == "FAIL" and trace["AC3"]["coverage"] == "PASS"  # skipped edge cases don't lower it
     assert all(t["test_case_ids"] for t in data["traceability"]), "every AC has at least one test"
+    # column differences come from comparing the two tables, once per record and column, not per test
+    diffs = data["column_differences"]
+    pairs = [(d["business_key"], d["column"]) for d in diffs]
+    assert len(pairs) == len(set(pairs)) and "test_case_id" not in diffs[0]
+    assert data["column_comparison"]["status"] == "OK"
+    assert data["reconciliation"]["mismatched_values"] == data["column_comparison"]["total_differences"] == len(diffs)
 
 
 def test_edge_cases_run_on_the_uploaded_records_that_hit_them(client):

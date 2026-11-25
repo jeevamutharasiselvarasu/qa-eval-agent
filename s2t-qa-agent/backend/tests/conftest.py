@@ -100,3 +100,58 @@ def prepare_run(client, mode="SQL", approve=True):
         r = client.post(f"/api/runs/{rid}/transformations/{v['id']}/approve", json={"decision": "APPROVED"})
         assert r.status_code == 200, r.text
     return rid, v
+
+
+# ------------------------------------------------------------------ fake Azure Blob container (no Azure account needed)
+class _Blob:
+    def __init__(self, name, size):
+        self.name, self.size = name, size
+
+
+class _Download:
+    def __init__(self, path):
+        self.path = path
+
+    def readinto(self, fh):
+        fh.write(self.path.read_bytes())
+
+
+class FakeContainer:
+    """Stands in for azure.storage.blob.ContainerClient: blobs are the files under `root`/<account>/<container>/."""
+
+    def __init__(self, root, ref, error=None):
+        self.base, self.error = Path(root) / ref.account / ref.container, error
+
+    def list_blobs(self, name_starts_with=""):
+        if self.error:
+            raise self.error
+        if not self.base.exists():
+            raise type("ResourceNotFoundError", (Exception,), {"status_code": 404})("no container")
+        for f in sorted(self.base.rglob("*")):
+            name = f.relative_to(self.base).as_posix()
+            if f.is_file() and name.startswith(name_starts_with):
+                yield _Blob(name, f.stat().st_size)
+
+    def get_blob_client(self, name):
+        return type("C", (), {"download_blob": lambda _self: _Download(self.base / name)})()
+
+
+@pytest.fixture
+def azure(tmp_path, monkeypatch):
+    """Returns put(path_in_storage, data_or_sample_name) and sets the app to read from the fake storage."""
+    from app.services import blob
+
+    root = tmp_path / "azure"
+    state = {"error": None}
+    monkeypatch.setattr(blob, "container_client", lambda ref: FakeContainer(root, ref, state["error"]))
+
+    def put(path, content):
+        dest = root / path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, str) and "\n" not in content and (SAMPLES / content).is_file():
+            content = (SAMPLES / content).read_bytes()
+        dest.write_bytes(content if isinstance(content, bytes) else content.encode())
+        return dest
+
+    put.state = state
+    return put

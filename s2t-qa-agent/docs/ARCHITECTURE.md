@@ -29,7 +29,11 @@ SQLAlchemy metadata DB (SQLite default / PostgreSQL)   +   run-scoped file stora
 Key files: `backend/app/services/transform/engine.py` (common contract), `validation.py`, `execution.py`,
 `approvals.py`, `requirements.py`, `rule_model.py`, `testgen.py`, `logic_tests.py`. The API is split into one router per area in `backend/app/api/routers/`
 (overview, runs, requirements, datasets, transformations, testing, executions, reports); `api/deps.py` holds the shared
-dependencies (`DB`, role aliases), the error mapping and the row serialiser. The client report is rendered by
+dependencies (`DB`, role aliases), the error mapping and the row serialiser. Sources and targets can be read from Azure Blob / ADLS Gen2
+paths (`services/blob.py`): the path is validated (Azure hosts only, https/abfss/wasbs, no SAS tokens, optional account
+allow-list), read with `DefaultAzureCredential`, a folder of part files is combined into one Parquet file, and the
+result goes through the same upload pipeline (fingerprint, parsing, profiling); `Dataset.source_uri` records the path so
+the dataset can be re-read. The client report is rendered by
 `services/report_render.py`: HTML from the Jinja template `app/templates/report.html.j2` (autoescaped, print-ready, with
 "Print / save as PDF") and a formatted Excel workbook (summary sheet, one Excel Table per section, fit-to-width printing).
 

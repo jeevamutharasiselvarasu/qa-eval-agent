@@ -182,6 +182,35 @@ saved token can't be decrypted and must be re-entered. Only `https` site URLs ar
 
 ---
 
+## 4b. Read data from Azure Blob Storage / ADLS Gen2
+
+Sources and the target can also come straight from Azure storage instead of an upload. On **New QA run**, switch a
+dataset to **Azure storage path**, paste the path, click **Check** (it lists what is there without reading the data),
+then **Add source** / **Use as target**. On a run's **Data files** tab, **From Azure storage** adds a source or replaces
+the target, and the cloud button on a row **reads it again from storage** (nothing changes if the data is the same;
+if the new data can't be read, the previous version is kept).
+
+Accepted paths:
+```
+https://<account>.blob.core.windows.net/<container>/<folder>/<file>.csv
+https://<account>.dfs.core.windows.net/<filesystem>/<folder>/<file>.parquet
+abfss://<container>@<account>.dfs.core.windows.net/<folder>/
+```
+A path can be **one file** (CSV, TXT/TSV, XLSX, JSON, Parquet) or a **folder of part files of one type**, such as
+Spark/Databricks output: the parts are read as one table, and marker files like `_SUCCESS` are ignored.
+
+**Sign-in: this machine's Azure identity.** The app never asks for keys or SAS tokens (a path with `?sig=…` is
+refused). It uses whatever identity the backend runs with, in this order: `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` /
+`AZURE_CLIENT_SECRET` environment variables (service principal), workload or managed identity (on an Azure VM, App
+Service or AKS), then the Azure CLI login. On a laptop, the simplest is:
+```bat
+az login
+```
+The identity needs the **Storage Blob Data Reader** role on the storage account or container. To restrict which
+storage accounts can be read, set `QA_BLOB_ALLOWED_ACCOUNTS=account1,account2` in `.env`.
+
+---
+
 ## 5. Configuration (optional)
 
 Settings come from a **`.env` file in the project root** (the `s2t-qa-agent` folder), which the backend reads at start-up.
@@ -209,6 +238,7 @@ cp .env.example .env
 | `DATABASE_URL` | *(empty → SQLite)* | Optional PostgreSQL, e.g. `postgresql+psycopg://user:password@localhost:5432/qa_agent`. Create the database first; tables are created automatically. |
 | `QA_SECRET_KEY` | *(auto-generated)* | Fernet key used to encrypt the Jira token saved on the Settings page. Set it to keep the same key across machines. |
 | `QA_STORAGE_DIR` | `backend/var/storage` | Where uploads, generated datasets, evidence and reports are stored. |
+| `QA_BLOB_ALLOWED_ACCOUNTS` | *(empty → any)* | Comma-separated Azure storage accounts that may be read. `QA_BLOB_MAX_FILES` (500) limits files per folder; `QA_MAX_UPLOAD_BYTES` also limits data read from storage. |
 | `QA_ENV` / `QA_AUTH_TOKENS` | `dev` / empty | In `dev` there is no login and everyone is an admin. See `.env.example` for setting up tokens and roles. |
 
 Restart the backend after you change `.env`. Never commit `.env`: it can contain credentials.
@@ -232,7 +262,7 @@ security helpers); integration tests drive the API end to end. Jira and the AI a
 internet access are needed.
 ```bat
 cd backend
-.\.venv\Scripts\python -m pytest -q                      :: everything: 232 passed
+.\.venv\Scripts\python -m pytest -q                      :: everything: 273 passed
 .\.venv\Scripts\python -m pytest tests\unit -q           :: unit tests only (about 20 s)
 .\.venv\Scripts\python -m pytest tests\integration -q    :: API end-to-end tests
 .\.venv\Scripts\python -m pytest --cov=app --cov-report=html   :: coverage (about 87%), opens in htmlcov\index.html
@@ -244,7 +274,7 @@ icon) or **Run Task… → Run tests**.
 **Frontend (Vitest + Testing Library).** Component tests for the step bar, Requirements, Test cases and shared UI.
 ```bat
 cd frontend
-npm test              :: 35 passed
+npm test              :: 40 passed
 npm run coverage      :: coverage report in coverage\index.html
 npm run lint          :: ESLint
 ```
@@ -272,6 +302,9 @@ set "QA_TEST_DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/qa_t
 | PowerShell: *running scripts is disabled* | Use the `.\.venv\Scripts\python …` commands as shown here, which need no activation script. |
 | Want to start over with empty data | Stop the backend and delete `backend\var\storage`. |
 | *ModuleNotFoundError: cryptography* after updating | Re-run `pip install -r requirements.txt` (new dependency). The database upgrades itself on start-up. |
+| Storage: *Could not sign in to Azure with this machine's identity* | Run `az login` in the terminal the backend starts from (then restart it), or set the `AZURE_*` service-principal variables. |
+| Storage: *no read access to container* | Give the identity the **Storage Blob Data Reader** role on the account or container. Role changes can take a few minutes. |
+| Storage: *Could not reach storage account* | The server can't reach `<account>.blob.core.windows.net` (network, firewall or private endpoint). |
 | Settings: *Jira rejected the credentials* | Check the e-mail address and token; the token must belong to that Atlassian account. |
 
 ---

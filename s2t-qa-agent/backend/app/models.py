@@ -126,6 +126,7 @@ class Dataset(Base):
     sheet_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     original_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_uri: Mapped[str | None] = mapped_column(Text, nullable=True)  # Azure Blob / ADLS path it was read from
     parquet_path: Mapped[str] = mapped_column(Text)
     fingerprint: Mapped[str] = mapped_column(String(80))
     schema_fingerprint: Mapped[str] = mapped_column(String(80), default="")

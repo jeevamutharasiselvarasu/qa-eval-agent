@@ -103,6 +103,7 @@ def upload_dataset(
     label: str = "",
     alias: str = "",
     options: dict | None = None,
+    source_uri: str | None = None,
 ) -> Dataset:
     if role not in ("SOURCE", "TARGET"):
         raise WorkflowError("role must be SOURCE or TARGET")
@@ -151,6 +152,7 @@ def upload_dataset(
         sheet_name=parsed.sheet_name,
         size_bytes=size,
         original_path=str(original),
+        source_uri=source_uri,
         parquet_path=str(out),
         fingerprint=fp,
         schema_fingerprint=schema_fingerprint(parsed.columns),

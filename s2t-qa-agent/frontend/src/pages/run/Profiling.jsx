@@ -1,14 +1,17 @@
 import { useRef, useState } from 'react'
-import { RefreshCw, Upload, Eye, Trash2 } from 'lucide-react'
+import { RefreshCw, Upload, Eye, Trash2, Cloud, DownloadCloud } from 'lucide-react'
 import { api } from '../../api.js'
 import { useRun } from '../RunWorkspace.jsx'
-import { Badge, Btn, Card, DataTable, Empty, Loading, Modal, useAction, useLoad } from '../../components/ui.jsx'
+import { Badge, Btn, Card, DataTable, Empty, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx'
+import BlobPath, { StoragePath } from '../../components/BlobPath.jsx'
 
 export default function Profiling() {
   const { runId, reload: reloadRun } = useRun()
   const [profiles, reload] = useLoad(() => api.get(`/runs/${runId}/profiles`), [runId])
   const [preview, setPreview] = useState(null)
+  const [fromStorage, setFromStorage] = useState(null) // 'sources' | 'target' | null
   const [busy, act] = useAction()
+  const toast = useToast()
   const srcRef = useRef(); const tgtRef = useRef()
   const refresh = () => { reload(); reloadRun() }
 
@@ -17,12 +20,24 @@ export default function Profiling() {
     await api.upload(`/runs/${runId}/datasets/${role}`, fd); await api.post(`/runs/${runId}/profile`); refresh()
   }, 'File added; requirements re-checked')
 
+  const addFromStorage = (role, path) => act('blob', async () => {
+    await api.post(`/runs/${runId}/datasets/${role}/blob`, { path }); setFromStorage(null)
+    await api.post(`/runs/${runId}/profile`); refresh()
+  }, role === 'target' ? 'Target read from storage; requirements re-checked' : 'Source read from storage; requirements re-checked')
+  const reloadDs = (d) => act(`rl-${d.id}`, async () => {
+    const r = await api.post(`/runs/${runId}/datasets/${d.id}/reload`)
+    if (!r.unchanged) await api.post(`/runs/${runId}/profile`)
+    refresh()
+    toast(r.unchanged ? `${d.alias}: no change in storage` : `${d.alias} reloaded (${r.dataset.row_count} rows); requirements re-checked`, 'ok')
+  })
+
   return (
     <div className="col">
       <Card title="Data files" sub="The uploaded source and target files. Originals are stored read-only with content fingerprints. Changing the files re-checks the requirements and, when they are complete, regenerates the SQL."
         actions={<>
           <Btn icon={Upload} onClick={() => srcRef.current.click()} busy={busy === 'up'}>Add source</Btn>
           <Btn icon={Upload} onClick={() => tgtRef.current.click()}>Replace target</Btn>
+          <Btn icon={Cloud} onClick={() => setFromStorage('sources')}>From Azure storage</Btn>
           <Btn icon={RefreshCw} busy={busy === 'prof'} onClick={() => act('prof', async () => { await api.post(`/runs/${runId}/profile`); refresh() }, 'Profiles refreshed')}>Re-check files</Btn>
           <input ref={srcRef} type="file" hidden onChange={e => e.target.files[0] && upload('sources', e.target.files[0])} />
           <input ref={tgtRef} type="file" hidden onChange={e => e.target.files[0] && upload('target', e.target.files[0])} />
@@ -34,7 +49,8 @@ export default function Profiling() {
               <tr key={d.id}>
                 <td><Badge s={d.role === 'TARGET' ? 'info' : ''}>{d.role}</Badge></td>
                 <td className="mono">{d.alias}</td>
-                <td className="small">{d.filename}{d.sheet_name && <span className="muted"> · {d.sheet_name}</span>}<div className="tiny muted">{d.file_format} · {(d.size_bytes / 1024).toFixed(1)} KB</div></td>
+                <td className="small" style={{ maxWidth: 320, overflowWrap: 'anywhere' }}>{d.filename}{d.sheet_name && <span className="muted"> · {d.sheet_name}</span>}<div className="tiny muted">{d.file_format} · {(d.size_bytes / 1024).toFixed(1)} KB</div>
+                  {d.source_uri && <StoragePath uri={d.source_uri} />}</td>
                 <td className="num">{d.row_count}</td><td className="num">{d.columns.length}</td>
                 <td>{p?.candidate_keys?.length ? p.candidate_keys.map(k => <span className="chip" key={k.join()}>{k.join(' + ')}</span>) : <span className="muted small">none</span>}</td>
                 <td onClick={e => e.stopPropagation()}>{d.role === 'SOURCE' ? <input type="checkbox" checked={d.feeds_target}
@@ -42,6 +58,8 @@ export default function Profiling() {
                 <td className="tiny mono muted" title={d.fingerprint}>{d.fingerprint.slice(7, 19)}…</td>
                 <td className="nowrap" onClick={e => e.stopPropagation()}>
                   <button className="btn sm ghost" title="Preview rows" onClick={() => act('pv', async () => setPreview({ d, data: await api.get(`/runs/${runId}/datasets/${d.id}/preview?limit=50`) }))}><Eye size={14} /></button>
+                  {d.source_uri && <button className="btn sm ghost" title="Read again from storage" aria-label={`Reload ${d.alias} from storage`} disabled={busy === `rl-${d.id}`}
+                    onClick={() => reloadDs(d)}><DownloadCloud size={14} /></button>}
                   <button className="btn sm ghost" title="Remove" onClick={() => window.confirm(`Remove ${d.filename} from this run?`) && act('rm', async () => { await api.del(`/runs/${runId}/datasets/${d.id}`); refresh() })}><Trash2 size={14} /></button>
                 </td>
               </tr>))}</tbody>
@@ -49,6 +67,13 @@ export default function Profiling() {
         )}
       </Card>
 
+      {fromStorage && <Modal title="Add data from Azure storage" onClose={() => setFromStorage(null)}>
+        <div className="seg mb" role="tablist">
+          <button role="tab" aria-selected={fromStorage === 'sources'} className={fromStorage === 'sources' ? 'on' : ''} onClick={() => setFromStorage('sources')}>New source</button>
+          <button role="tab" aria-selected={fromStorage === 'target'} className={fromStorage === 'target' ? 'on' : ''} onClick={() => setFromStorage('target')}>Replace target</button>
+        </div>
+        <BlobPath busy={busy === 'blob'} addLabel={fromStorage === 'target' ? 'Use as target' : 'Add source'} onAdd={({ path }) => addFromStorage(fromStorage, path)} />
+      </Modal>}
       {preview && <Modal title={`Preview · ${preview.d.alias}`} onClose={() => setPreview(null)}><DataTable columns={preview.data.columns} rows={preview.data.rows} /></Modal>}
     </div>
   )

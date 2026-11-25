@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Upload, X, Play, CheckCircle2, Circle, Loader2, Search } from 'lucide-react'
+import { Upload, X, Play, CheckCircle2, Circle, Loader2, Search, Cloud } from 'lucide-react'
 import { api } from '../api.js'
 import { Alert, Badge, Btn, Card, PageHeader, useToast } from '../components/ui.jsx'
+import BlobPath, { StoragePath, blobName, describeCheck } from '../components/BlobPath.jsx'
 
 function Drop({ multiple, onFiles, label }) {
   const ref = useRef()
@@ -15,6 +16,15 @@ function Drop({ multiple, onFiles, label }) {
       <div className="tiny">CSV, TXT/TSV, XLSX, JSON, Parquet</div>
       <input ref={ref} type="file" hidden multiple={multiple} accept=".csv,.txt,.tsv,.xlsx,.json,.ndjson,.parquet"
         onChange={(e) => { onFiles([...e.target.files]); e.target.value = '' }} />
+    </div>
+  )
+}
+
+function SourceTabs({ mode, setMode }) {
+  return (
+    <div className="seg" role="tablist">
+      <button role="tab" aria-selected={mode === 'file'} className={mode === 'file' ? 'on' : ''} onClick={() => setMode('file')}><Upload size={13} />Upload file</button>
+      <button role="tab" aria-selected={mode === 'blob'} className={mode === 'blob' ? 'on' : ''} onClick={() => setMode('blob')}><Cloud size={13} />Azure storage path</button>
     </div>
   )
 }
@@ -33,14 +43,23 @@ export default function NewRun({ meta }) {
   const [err, setErr] = useState(null)
   const [ticket, setTicket] = useState(null)
   const [checking, setChecking] = useState(false)
+  const [srcMode, setSrcMode] = useState('file')
+  const [tgtMode, setTgtMode] = useState('file')
   const busy = steps.some(s => s.state === 'run')
 
   const addSources = (files) => setSources(s => [...s, ...files.map(f => ({ file: f, alias: alias(f.name), label: f.name }))])
+  const addBlobSource = ({ path, check }) => setSources(s => [...s, { path, check, alias: alias(blobName(path)), label: blobName(path) }])
+  const sendSource = (runId, s) => s.path
+    ? api.post(`/runs/${runId}/datasets/sources/blob`, { path: s.path, alias: s.alias, label: s.label })
+    : (() => { const fd = new FormData(); fd.append('file', s.file); fd.append('alias', s.alias); fd.append('label', s.label); return api.upload(`/runs/${runId}/datasets/sources`, fd) })()
+  const sendTarget = (runId) => target.path
+    ? api.post(`/runs/${runId}/datasets/target/blob`, { path: target.path, label: target.name })
+    : (() => { const fd = new FormData(); fd.append('file', target); fd.append('label', target.name); return api.upload(`/runs/${runId}/datasets/target`, fd) })()
   const canGo = key.trim() && sources.length && target && !busy
 
   async function go() {
     setErr(null)
-    const plan = ['Create QA run', 'Retrieve Jira issue', ...sources.map(s => `Upload source: ${s.alias}`), 'Upload target', 'Parse & profile datasets', 'Read how each target column is built',
+    const plan = ['Create QA run', 'Retrieve Jira issue', ...sources.map(s => `${s.path ? 'Read' : 'Upload'} source: ${s.alias}`), target?.path ? 'Read target from storage' : 'Upload target', 'Parse & profile datasets', 'Read how each target column is built',
       'Generate the SQL and test pack (when the requirements are complete)']
     const st = plan.map(l => ({ label: l, state: 'todo' }))
     setSteps(st)
@@ -58,13 +77,11 @@ export default function NewRun({ meta }) {
       mark(i++, 'done', `${j.source === 'MOCK' ? 'Mock fixture' : 'Jira Cloud'} · ${j.payload.summary}`)
       for (const s of sources) {
         mark(i, 'run')
-        const fd = new FormData(); fd.append('file', s.file); fd.append('alias', s.alias); fd.append('label', s.label)
-        const d = await api.upload(`/runs/${runId}/datasets/sources`, fd)
+        const d = await sendSource(runId, s)
         mark(i++, 'done', `${d.row_count} rows · ${d.columns.length} columns`)
       }
       mark(i, 'run')
-      const fd = new FormData(); fd.append('file', target); fd.append('label', target.name)
-      const t = await api.upload(`/runs/${runId}/datasets/target`, fd)
+      const t = await sendTarget(runId)
       mark(i++, 'done', `${t.row_count} rows · ${t.columns.length} columns`)
       mark(i, 'run'); await api.post(`/runs/${runId}/profile`); mark(i++, 'done')
       mark(i, 'run'); await api.post(`/runs/${runId}/mappings/generate`)
@@ -110,24 +127,29 @@ export default function NewRun({ meta }) {
               </Alert></div>) : <div className="mt"><Alert kind="err">{ticket.error}</Alert></div>)}
             {meta?.jira_mode === 'mock' && <div className="tiny muted mt-s">Using built-in sample tickets (try DATA-1234 or SALES-77). Connect your Jira Cloud site in <Link to="/settings">Settings</Link>.</div>}
           </Card>
-          <Card title="2 · Source datasets" sub="Each source becomes a SQL table / Python sources[...] key under its alias.">
-            <Drop multiple onFiles={addSources} label="Drop source files or click to browse" />
+          <Card title="2 · Source datasets" sub="Each source becomes a SQL table / Python sources[...] key under its alias." actions={<SourceTabs mode={srcMode} setMode={setSrcMode} />}>
+            {srcMode === 'file' ? <Drop multiple onFiles={addSources} label="Drop source files or click to browse" /> : <BlobPath onAdd={addBlobSource} addLabel="Add source" />}
             {sources.length > 0 && <div className="tw mt"><table className="t">
-              <thead><tr><th>File</th><th>Alias (table name)</th><th>Label</th><th /></tr></thead>
+              <thead><tr><th>File or path</th><th>Alias (table name)</th><th>Label</th><th /></tr></thead>
               <tbody>{sources.map((s, i) => (
                 <tr key={i}>
-                  <td className="small">{s.file.name}<div className="tiny muted">{(s.file.size / 1024).toFixed(1)} KB</div></td>
+                  <td className="small" style={{ maxWidth: 260, overflowWrap: 'anywhere' }}>{s.path
+                    ? <><StoragePath uri={s.path} /><div className="tiny muted">{describeCheck(s.check)}</div></>
+                    : <>{s.file.name}<div className="tiny muted">{(s.file.size / 1024).toFixed(1)} KB</div></>}</td>
                   <td><input value={s.alias} onChange={e => setSources(x => x.map((y, j) => j === i ? { ...y, alias: e.target.value } : y))} style={{ width: 150 }} /></td>
                   <td><input value={s.label} onChange={e => setSources(x => x.map((y, j) => j === i ? { ...y, label: e.target.value } : y))} /></td>
                   <td><button className="btn ghost sm" onClick={() => setSources(x => x.filter((_, j) => j !== i))} aria-label="Remove"><X size={14} /></button></td>
                 </tr>))}</tbody>
             </table></div>}
           </Card>
-          <Card title="3 · Existing target dataset" sub="Exactly one target per run. It is never modified.">
+          <Card title="3 · Existing target dataset" sub="Exactly one target per run. It is never modified." actions={!target && <SourceTabs mode={tgtMode} setMode={setTgtMode} />}>
             {target ? (
-              <div className="row between"><div><b>{target.name}</b> <span className="muted small">{(target.size / 1024).toFixed(1)} KB</span></div>
+              <div className="row between"><div style={{ overflowWrap: 'anywhere' }}>{target.path
+                ? <><b>{target.name}</b><StoragePath uri={target.path} /><div className="tiny muted">{describeCheck(target.check)}</div></>
+                : <><b>{target.name}</b> <span className="muted small">{(target.size / 1024).toFixed(1)} KB</span></>}</div>
                 <button className="btn ghost sm" onClick={() => setTarget(null)}><X size={14} />Remove</button></div>
-            ) : <Drop onFiles={(f) => setTarget(f[0])} label="Drop the target file or click to browse" />}
+            ) : tgtMode === 'file' ? <Drop onFiles={(f) => setTarget(f[0])} label="Drop the target file or click to browse" />
+              : <BlobPath addLabel="Use as target" onAdd={({ path, check }) => setTarget({ path, check, name: blobName(path) })} />}
           </Card>
         </div>
         <div className="col">

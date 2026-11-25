@@ -4,7 +4,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from app.services.validation import CheckError, ValidationContext, run_check
+from app.services.validation import CheckError, ValidationContext, compare_targets, run_check
 
 
 def _write(tmp_path, name, rows):
@@ -143,3 +143,42 @@ def test_mismatch_wording_is_singular_for_one_record(ctx):
     c = ctx([{"ID": "1", "V": 2}], [{"ID": "1", "V": 1}])
     r = run_check(c, {"type": "COLUMN_MATCH", "column": "V", "keys": ["ID"]})
     assert r.actual == "1 mismatch"
+
+
+# ------------------------------------------------------------------ column comparison for the report
+def test_compare_targets_lists_each_record_and_column_once(tmp_path):
+    expected = [
+        {"ID": "C1", "NAME": "ANITA", "AMT": 10.0},
+        {"ID": "C2", "NAME": "RAVI", "AMT": 5.0},
+        {"ID": "C3", "NAME": "MEERA", "AMT": 1.0},
+    ]
+    actual = [
+        {"ID": "C1", "NAME": "Anita", "AMT": 10.0},  # name differs
+        {"ID": "C2", "NAME": "RAVI", "AMT": -100.0},  # amount differs
+        {"ID": "C3", "NAME": "MEERA", "AMT": 1.0},
+        {"ID": "C9", "NAME": "X", "AMT": 0.0},  # extra record: not a column difference
+    ]
+    out = compare_targets(_write(tmp_path, "e", expected), _write(tmp_path, "a", actual), ["id"])
+    assert out["total_differences"] == 2 and not out["truncated"]
+    assert [(r["business_key"], r["column"]) for r in out["differences"]] == [("C1", "NAME"), ("C2", "AMT")]
+    assert out["differences"][1]["difference"] == -105.0
+    assert {c["column"]: c["differences"] for c in out["columns"]} == {"NAME": 1, "AMT": 1}
+    assert all(c["compared"] == 3 for c in out["columns"])
+
+
+def test_compare_targets_leaves_out_duplicate_keys_and_needs_a_key(tmp_path):
+    e = _write(tmp_path, "e", [{"ID": "C1", "V": 1}, {"ID": "C2", "V": 2}])
+    a = _write(tmp_path, "a", [{"ID": "C1", "V": 9}, {"ID": "C1", "V": 8}, {"ID": "C2", "V": 2}])
+    out = compare_targets(e, a, ["ID"])
+    assert out["total_differences"] == 0 and out["duplicate_keys_excluded"] == 2
+    with pytest.raises(CheckError, match="No business key"):
+        compare_targets(e, a, [])
+    with pytest.raises(CheckError, match="not found"):
+        compare_targets(e, a, ["NOPE"])
+
+
+def test_compare_targets_truncates_long_lists(tmp_path):
+    e = _write(tmp_path, "e", [{"ID": str(i), "V": i} for i in range(10)])
+    a = _write(tmp_path, "a", [{"ID": str(i), "V": i + 1} for i in range(10)])
+    out = compare_targets(e, a, ["ID"], limit=3)
+    assert out["total_differences"] == 10 and len(out["differences"]) == 3 and out["truncated"]

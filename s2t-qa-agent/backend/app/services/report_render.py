@@ -111,6 +111,31 @@ def _bar(counts: dict) -> list[dict]:
     return out
 
 
+def comparison_text(data: dict) -> str:
+    """One sentence describing how the column differences were found."""
+    cmp_ = data.get("column_comparison") or {}
+    if cmp_.get("status") != "OK":
+        return cmp_.get("message") or "The column comparison was not run."
+    cols = cmp_.get("columns") or []
+    n = cmp_.get("total_differences", 0)
+    keys = ", ".join(cmp_.get("keys") or [])
+    compared = cols[0]["compared"] if cols else 0
+    text = (
+        f"The expected target was compared with the uploaded target on {compared} record(s) matched by {keys}, "
+        f"across {len(cols)} column(s). Each record and column is listed once: "
+        f"{n} difference{'s' if n != 1 else ''} found."
+    )
+    if cmp_.get("truncated"):
+        text += f" The first {len(data.get('column_differences') or [])} are shown."
+    if cmp_.get("duplicate_keys_excluded"):
+        text += f" {cmp_['duplicate_keys_excluded']} record(s) with a duplicate key could not be matched and are left out."
+    return text
+
+
+def comparison_columns(data: dict) -> list[dict]:
+    return [{**c, "status": "FAIL" if c["differences"] else "PASS"} for c in (data.get("column_comparison") or {}).get("columns") or []]
+
+
 def html_context(data: dict, generated_at: datetime | None = None) -> dict:
     """Everything the template shows, derived from the collected report data."""
     s = data["summary"]
@@ -120,6 +145,8 @@ def html_context(data: dict, generated_at: datetime | None = None) -> dict:
     total = c.get("total", 0)
     return {
         "data": data,
+        "comparison_text": comparison_text(data),
+        "comparison_columns": comparison_columns(data),
         "s": s,
         "c": c,
         "total": total,
@@ -325,13 +352,18 @@ def render_xlsx(data: dict, path: Path, generated_at: datetime | None = None) ->
         "Column differences",
         data["column_differences"],
         [
-            ("test_case_id", "Test"),
             ("business_key", "Business key"),
             ("column", "Column"),
             ("expected", "Expected"),
             ("actual", "Uploaded target"),
             ("difference", "Difference"),
         ],
+    )
+    _sheet(
+        wb,
+        "Columns compared",
+        comparison_columns(data),
+        [("column", "Column"), ("compared", "Records compared"), ("differences", "Differences"), ("status", "Result")],
     )
     _sheet(
         wb,
