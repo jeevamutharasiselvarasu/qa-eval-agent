@@ -1,6 +1,4 @@
 import os
-import shutil
-import tempfile
 import time
 from pathlib import Path
 
@@ -25,11 +23,13 @@ def _env(tmp_path, monkeypatch):
     else:
         monkeypatch.delenv("DATABASE_URL", raising=False)
     from app import config, db
+
     config.reset_settings()
     db.init_engine()
     db.create_all()
     if pg_url:
         from sqlalchemy import text
+
         names = ", ".join(f'"{t.name}"' for t in db.Base.metadata.sorted_tables)
         with db.get_engine().begin() as conn:
             conn.execute(text("SET lock_timeout = '20s'"))
@@ -41,7 +41,9 @@ def _env(tmp_path, monkeypatch):
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
+
     from app.main import create_app
+
     with TestClient(create_app()) as c:
         yield c
 
@@ -67,7 +69,9 @@ def complete_requirements(client, rid, status="ACCEPTED_LIMITATION"):
     spec = client.get(f"/api/runs/{rid}/target-spec").json()
     for q in spec["questions"]:
         if q["status"] == "OPEN":
-            r = client.post(f"/api/runs/{rid}/target-spec/questions/{q['id']}", json={"status": status, "note": "Not specified in Jira; tested later."})
+            r = client.post(
+                f"/api/runs/{rid}/target-spec/questions/{q['id']}", json={"status": status, "note": "Not specified in Jira; tested later."}
+            )
             assert r.status_code == 200, r.text
     return client.get(f"/api/runs/{rid}/target-spec").json()
 

@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { PlugZap, Save, CheckCircle2, XCircle, KeyRound } from 'lucide-react'
 import { api } from '../api.js'
-import { Alert, Badge, Btn, Card, fmtDate, useAction, useLoad } from '../components/ui.jsx'
+import { Alert, Badge, Btn, Card, Loading, PageHeader, fmtDate, useAction, useLoad } from '../components/ui.jsx'
 
 export default function Settings({ meta, onSaved }) {
   const [cfg, reload] = useLoad(() => api.get('/settings/jira'), [])
@@ -15,7 +15,7 @@ export default function Settings({ meta, onSaved }) {
       ac_custom_fields: (cfg.ac_custom_fields || []).join(', ') })
   }, [cfg]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!cfg || !f) return <div className="muted">Loading…</div>
+  if (!cfg || !f) return <Loading rows={5} />
   const set = (k) => (e) => { setF({ ...f, [k]: e.target.value }); setTest(null) }
   const body = (extra = {}) => ({ ...f, api_token: f.api_token || null, ...extra })
 
@@ -30,7 +30,7 @@ export default function Settings({ meta, onSaved }) {
 
   return (
     <div>
-      <div className="page-head"><div><h1>Settings</h1><p>Connect the app to your Jira Cloud site. Changes apply to new Jira retrievals immediately.</p></div></div>
+      <PageHeader title="Settings" description="Connect the app to your Jira Cloud site. Changes apply to the next Jira retrieval." />
       <div className="grid g2" style={{ gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,1fr)' }}>
         <Card title="Jira connection" actions={<Badge s={cfg.mode === 'cloud' ? 'APPROVED' : 'MOCK'}>{cfg.mode === 'cloud' ? 'Connected to Jira Cloud' : 'Using sample tickets'}</Badge>}
           sub={cfg.source === 'settings' ? `Saved by ${cfg.updated_by} · ${fmtDate(cfg.updated_at)}` : 'Currently from the .env file / defaults'}>

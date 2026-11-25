@@ -17,7 +17,7 @@ React UI (Vite)  ──►  FastAPI (/api)  ──►  services (deterministic) 
                                            ├─ MappingService
                                            ├─ TransformationStudio ─► engine.execute()  ◄─ ONE engine for both tracks
                                            │      SQL (DuckDB) · PYTHON (isolated worker) · VISUAL (→ SQL)
-                                           ├─ TestCaseGenerator · SyntheticDataGenerator
+                                           ├─ TestCaseGenerator · logic tests
                                            ├─ ApprovalService (content-hash bound)
                                            ├─ ExecutionManager (idempotent, checkpointed, threaded)
                                            ├─ ValidationEngine (all PASS/FAIL)
@@ -27,13 +27,17 @@ SQLAlchemy metadata DB (SQLite default / PostgreSQL)   +   run-scoped file stora
 ```
 
 Key files: `backend/app/services/transform/engine.py` (common contract), `validation.py`, `execution.py`,
-`approvals.py`, `requirements.py`, `synthetic.py`, `testgen.py`. The API is in `backend/app/api/routes.py`.
+`approvals.py`, `requirements.py`, `rule_model.py`, `testgen.py`, `logic_tests.py`. The API is split into one router per area in `backend/app/api/routers/`
+(overview, runs, requirements, datasets, transformations, testing, executions, reports); `api/deps.py` holds the shared
+dependencies (`DB`, role aliases), the error mapping and the row serialiser. The client report is rendered by
+`services/report_render.py`: HTML from the Jinja template `app/templates/report.html.j2` (autoescaped, print-ready, with
+"Print / save as PDF") and a formatted Excel workbook (summary sheet, one Excel Table per section, fit-to-width printing).
 
 ### Common transformation contract
 `TransformationDefinition(transformation_id, qa_run_id, mode, inputs{alias→parquet}, code | visual_spec, version,
 content_hash, …)` → `TransformationResult(execution_id, status, output_path, output_schema, row_count,
 duration_ms, logs, warnings, errors[line, kind], code_version, input_fingerprints)`.
-Previews, the actual expected target and synthetic expected targets all call `engine.execute()`.
+Previews and the expected target both call `engine.execute()`.
 
 **Python contract:** `def transform(sources: dict[str, pandas.DataFrame]) -> pandas.DataFrame`. Each source alias is a key.
 Allowed imports are `pandas, numpy, math, datetime, decimal, re, statistics, collections, itertools, functools`
@@ -57,7 +61,7 @@ templates without attribute or index fields). `print()` output appears in the lo
 * Code that fails validation cannot be previewed or approved. Execution requires a current approval.
 
 ### Approvals and invalidation
-Each artifact (REQUIREMENTS, DATASETS, MAPPINGS, TRANSFORMATION, TEST_CASES, SYNTHETIC_DATA, EXECUTION_SETTINGS) is
+Each artifact (REQUIREMENTS, DATASETS, MAPPINGS, TRANSFORMATION, TEST_CASES, EXECUTION_SETTINGS) is
 hashed. An approval is valid only while the current hash equals the approved hash. Any edit, such as a code
 change, mapping edit, gap clarification or tolerance tweak, turns the approval **STALE**, and execution is refused
 until someone re-approves. Every decision is stored with reviewer, timestamp, version and reason.
@@ -94,24 +98,30 @@ re-retrieval, profiling or dataset change, and the test pack is built after it.
 * Questions that an edit answers structurally (no key, no join, precision, conflict) are closed automatically.
 * An edit keeps the AC id of the rule it replaces, so tests stay grouped by acceptance criterion.
 
-**ACCEPTED_LIMITATION** unblocks SQL generation, but dependent tests and scenarios stay BLOCKED. Only CLARIFIED makes
+**ACCEPTED_LIMITATION** unblocks SQL generation, but dependent tests stay BLOCKED. Only CLARIFIED makes
 them run against the rule.
 
 **UI changes.** The Mappings tab was merged into Requirements, and the Data tab now lists only the files (column
 profiling still runs in the background for the null checks).
 
 ### Test pack (positive / negative / edge)
-`services/testpack.py` builds the pack: draft transformation (if none) → synthetic scenarios → `testgen.generate_test_pack`.
-* Tests are grouped by acceptance criterion with IDs `TC-AC<n>-NN`. General checks use `TC-GEN-NN`.
-* Each test is typed POSITIVE, NEGATIVE, EDGE or GENERAL, and runs on either the uploaded data (ACTUAL) or a
-  synthetic scenario (SYNTHETIC).
-* Synthetic tests use the **RULE_ORACLE** check:
-  * Each approved mapping rule is compiled independently over the `src_<alias>` views.
-  * The result is compared with the transformation's output, so a transformation bug cannot hide behind its own
-    expected snapshot.
-* A scenario affected by an open gap is BLOCKED with the gap ID.
-* An acceptance criterion that cannot be parsed into tests gets a BLOCKED manual test, so coverage gaps stay visible.
-* `POST /runs/{id}/run-validation` runs both tracks and generates the report.
+`services/testpack.py` builds the pack: SQL from the requirements (if none) → `testgen.generate_test_pack`.
+There is no synthetic data. Every test checks the **uploaded target** (the developer's output) against the expected
+target the approved reference SQL builds from the uploaded sources.
+* Tests are grouped by acceptance criterion (`TC-AC<n>-NN`), transformation logic (`TC-TL-NN`) and general
+  checks (`TC-GEN-NN`). Each is typed POSITIVE, NEGATIVE, EDGE or GENERAL.
+* POSITIVE cases check the whole target.
+* NEGATIVE and EDGE cases carry a **scope**: a query over the `src_<alias>` views that returns the keys of the uploaded
+  records hitting an edge case. Scopes cover no join match, several matches, rows failing or all failing the filter,
+  null, zero or negative inputs, inputs with more decimals than the result, unusual text, and duplicate or null source
+  keys (`rule_model.py` describes base, join and filter).
+* `ValidationContext.apply_scope` redefines the listed views to those keys before the check runs. An empty scope
+  gives SKIPPED ("not in this data"); SKIPPED results do not lower an acceptance criterion's coverage.
+* Scopes need one business key shared by the base source and the target. With a composite key, only the
+  whole-target cases are generated.
+* A test whose expectation depends on an unanswered question is BLOCKED with the gap ID.
+* An acceptance criterion that cannot be parsed into tests gets a BLOCKED manual test.
+* `POST /runs/{id}/run-validation` runs the selected tests and generates the report.
 
 ### Transformation-logic tests and test selection
 `services/logic_tests.py` parses the current transformation SQL with sqlglot. Visual mode is parsed from its compiled
@@ -151,8 +161,8 @@ The `AppSetting` table stores the Jira mode, URL and e-mail address. The API tok
 
 ### Workflow states
 `RUN_CREATED → JIRA_RETRIEVAL_IN_PROGRESS → JIRA_RETRIEVED → REQUIREMENTS_ANALYZED → DATASETS_UPLOADED →
-DATASETS_PROFILED → MAPPING_GENERATED → TRANSFORMATION_DESIGNED → TEST_CASES_GENERATED → SYNTHETIC_DATA_GENERATED →
-AWAITING_APPROVAL → APPROVED → ACTUAL_TRANSFORMATION_IN_PROGRESS / SYNTHETIC_EXECUTION_IN_PROGRESS →
+DATASETS_PROFILED → MAPPING_GENERATED → TRANSFORMATION_DESIGNED → TEST_CASES_GENERATED →
+AWAITING_APPROVAL → APPROVED → ACTUAL_TRANSFORMATION_IN_PROGRESS →
 VALIDATION_IN_PROGRESS → VALIDATION_COMPLETED → FAILURE_ANALYSIS_COMPLETED → REPORT_GENERATED`.
 Exception states (`JIRA_RETRIEVAL_FAILED`, `REQUIREMENT_GAP`, `DATASET_PARSE_FAILED`, `PROFILE_FAILED`,
 `MAPPING_REVIEW_REQUIRED`, `APPROVAL_REJECTED`, `TRANSFORMATION_FAILED`, `EXECUTION_FAILED`, `PARTIAL_SUCCESS`,
@@ -162,9 +172,8 @@ Exception states (`JIRA_RETRIEVAL_FAILED`, `REQUIREMENT_GAP`, `DATASET_PARSE_FAI
 `POST /api/runs`, `POST /api/runs/{id}/jira/retrieve`, `GET /api/runs/{id}/requirements`,
 `POST /api/runs/{id}/requirements/clarifications`, `POST /api/runs/{id}/datasets/sources|target`, `POST /api/runs/{id}/profile`,
 `POST /api/runs/{id}/mappings/generate`, `PATCH /api/runs/{id}/mappings/{mid}`, `POST /api/runs/{id}/transformations[/generate|/validate|/explain|/fix|/restore]`,
-`POST /api/runs/{id}/transformations/{vid}/preview|approve`, `POST /api/runs/{id}/synthetic-data/generate`,
-`POST /api/runs/{id}/test-pack[/approve]`, `GET /api/runs/{id}/test-pack`, `POST /api/runs/{id}/run-validation`,
-`GET|PUT /api/settings/jira`, `POST /api/settings/jira/test`, `POST /api/jira/preview`, `POST /api/runs/{id}/approvals`, `POST /api/runs/{id}/execute/actual|synthetic`,
+`POST /api/runs/{id}/transformations/{vid}/preview|approve`, `POST /api/runs/{id}/test-pack[/approve]`, `GET /api/runs/{id}/test-pack`, `POST /api/runs/{id}/run-validation`,
+`GET|PUT /api/settings/jira`, `POST /api/settings/jira/test`, `POST /api/jira/preview`, `POST /api/runs/{id}/approvals`, `POST /api/runs/{id}/execute/actual`,
 `GET /api/executions/{eid}`, `POST /api/executions/{eid}/retry|cancel`, `GET /api/compare?a=&b=`,
 `POST /api/runs/{id}/reports`, `GET /api/reports/{rid}/download/{json|html|xlsx|powerbi}`, `GET /api/runs/{id}/traceability|audit`.
 Interactive docs are at `/docs`.
@@ -193,7 +202,7 @@ Legend: ✅ implemented and covered by automated tests · 🟡 implemented, part
 | SQL / Python / Visual equivalence | ✅ | Tested on the sample scenario. |
 | AI generate, explain, fix, modify | 🟡 | The mock provider is a deterministic compiler from accepted mappings, plus sqlglot-based explanations and fuzzy column fixes. Instruction-based edits need `LLM_MODE=openai`, which is **not tested against a live model**. |
 | Test case generation and AC coverage report | ✅ | |
-| Synthetic data (12 scenario families, seeded, isolated, expected via engine, BLOCKED on gaps) | ✅ | Generic over the requirement types listed above. Domain values come from the real data's categories (values only). |
+| Edge-case checks on uploaded records (scoped, SKIPPED when absent) | ✅ | Single business key required for scoping. |
 | Human approval with hash-based invalidation | ✅ | |
 | Deterministic validation (schema, count, keys, nulls, dupes, missing/extra, column recon with tolerance, null-safe, case/trim, temporal, composite keys, coverage, defaults, snapshot, predicates) | ✅ | |
 | Execution manager (threads, idempotency, checkpoints, retry, restart recovery, cancel) | ✅ | Runs in-process threads. Use a real job queue for multi-instance deployments. |
@@ -214,8 +223,6 @@ these defects, which are now fixed and covered by `tests/test_round2_regressions
 * Composite business keys ("A and B together form the business key") weren't recognised, so every record-level test was blocked.
 * A filter on a multi-word dataset ("Only order lines with …") wasn't extracted, so the AC was dropped silently. Unparsed ACs now raise a gap.
 * Grouping keys named in a rule ("… per SALE_DATE, PRODUCT_CODE") weren't mapped, so the AI draft aggregated at the wrong grain.
-* Synthetic data assumed the business key was also the join key and a string, which broke on date keys and lookup joins.
-  Base-side filters and multiplicative precision scenarios are now generated correctly.
 * Python sandbox: `operator.attrgetter`, `string.Formatter` and `str.format` field traversal allowed dynamic dunder
   access past the AST policy. The audit hook still blocked any file, network or process access, so no data leaked.
 * Ragged CSV files were accepted as a single garbage column; very long filenames lost their extension; unknown `/api/*`
@@ -223,8 +230,7 @@ these defects, which are now fixed and covered by `tests/test_round2_regressions
 
 
 ### Honest limitations to know
-* Synthetic Track B checks the transformation against an independent rule oracle compiled from the approved mapping
-  rules. A rule the mapping text doesn't express well (complex CASE logic or window functions) produces a BLOCKED
-  test that needs manual review rather than an automatic pass. The oracle is only as correct as the approved mappings.
+* Edge cases are only tested when the uploaded data contains them; otherwise they are SKIPPED. The expected values
+  come from the approved reference SQL, so they are only as correct as the requirements it was generated from.
 * A filter on the right side of a LEFT JOIN is placed **before** the join in AI drafts, and this is recorded as an
   explicit assumption in the code comment and version note for review.

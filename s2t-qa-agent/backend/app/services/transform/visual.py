@@ -15,6 +15,7 @@ EXPR:  {"col": "c.X"} | {"lit": v} | {"fn": NAME, "args": [...]} | {"op": OP, "a
 COND:  EXPR, or shorthand {"column": "t.STATUS", "op": "=", "value": "COMPLETED"}
 Aggregates trigger GROUP BY ALL.
 """
+
 from __future__ import annotations
 
 import re
@@ -23,10 +24,43 @@ from typing import Any
 import sqlglot
 from sqlglot import exp
 
-FUNCS = {"UPPER", "LOWER", "TRIM", "LTRIM", "RTRIM", "CONCAT", "REPLACE", "SUBSTRING", "SPLIT_PART", "LENGTH",
-         "COALESCE", "NULLIF", "ROUND", "FLOOR", "CEIL", "ABS", "SUM", "COUNT", "AVG", "MIN", "MAX",
-         "COUNT_DISTINCT", "STRPTIME", "STRFTIME", "DATE_TRUNC", "DATE_DIFF", "LEFT", "RIGHT", "LPAD", "RPAD",
-         "GREATEST", "LEAST", "CURRENT_DATE", "MD5", "REGEXP_REPLACE"}
+FUNCS = {
+    "UPPER",
+    "LOWER",
+    "TRIM",
+    "LTRIM",
+    "RTRIM",
+    "CONCAT",
+    "REPLACE",
+    "SUBSTRING",
+    "SPLIT_PART",
+    "LENGTH",
+    "COALESCE",
+    "NULLIF",
+    "ROUND",
+    "FLOOR",
+    "CEIL",
+    "ABS",
+    "SUM",
+    "COUNT",
+    "AVG",
+    "MIN",
+    "MAX",
+    "COUNT_DISTINCT",
+    "STRPTIME",
+    "STRFTIME",
+    "DATE_TRUNC",
+    "DATE_DIFF",
+    "LEFT",
+    "RIGHT",
+    "LPAD",
+    "RPAD",
+    "GREATEST",
+    "LEAST",
+    "CURRENT_DATE",
+    "MD5",
+    "REGEXP_REPLACE",
+}
 AGG = {"SUM", "COUNT", "AVG", "MIN", "MAX", "COUNT_DISTINCT"}
 BINOPS = {"+", "-", "*", "/", "=", "!=", "<>", "<", "<=", ">", ">=", "AND", "OR", "LIKE", "||", "%"}
 UNOPS = {"NOT", "IS NULL", "IS NOT NULL", "NEG"}
@@ -129,7 +163,11 @@ def compile_expr(e: Any, aggs: list | None = None) -> str:
         return f"CAST({compile_expr(e['cast'], aggs)} AS {to.upper()})"
     if "sql" in e:  # validated free-form scalar expression (no subqueries / tables)
         try:
-            node = sqlglot.parse_one(str(e["sql"]), read="duckdb", into=exp.Condition) if False else sqlglot.parse_one(f"SELECT {e['sql']}", read="duckdb")
+            node = (
+                sqlglot.parse_one(str(e["sql"]), read="duckdb", into=exp.Condition)
+                if False
+                else sqlglot.parse_one(f"SELECT {e['sql']}", read="duckdb")
+            )
         except Exception as ex:  # noqa: BLE001
             raise VisualSpecError(f"Invalid expression '{e['sql']}': {ex}") from ex
         if any(isinstance(n, (exp.Table, exp.Subquery, exp.Select)) for n in node.expressions[0].walk()):
@@ -228,8 +266,22 @@ def sql_to_expr(sql_expr: str, qualify: dict[str, str] | None = None) -> dict:
             return {"lit": n.this if n.is_string else (float(n.this) if "." in n.this else int(n.this))}
         if isinstance(n, exp.Null):
             return {"lit": None}
-        ops = {exp.Add: "+", exp.Sub: "-", exp.Mul: "*", exp.Div: "/", exp.EQ: "=", exp.NEQ: "!=", exp.GT: ">",
-               exp.GTE: ">=", exp.LT: "<", exp.LTE: "<=", exp.And: "AND", exp.Or: "OR", exp.DPipe: "||", exp.Mod: "%"}
+        ops = {
+            exp.Add: "+",
+            exp.Sub: "-",
+            exp.Mul: "*",
+            exp.Div: "/",
+            exp.EQ: "=",
+            exp.NEQ: "!=",
+            exp.GT: ">",
+            exp.GTE: ">=",
+            exp.LT: "<",
+            exp.LTE: "<=",
+            exp.And: "AND",
+            exp.Or: "OR",
+            exp.DPipe: "||",
+            exp.Mod: "%",
+        }
         for cls, op in ops.items():
             if type(n) is cls:
                 return {"op": op, "args": [conv(n.left), conv(n.right)]}
@@ -298,9 +350,17 @@ def has_agg(e: Any) -> bool:
 
 
 # ------------------------------------------------------------------ visual -> pandas (AI draft generator)
-PD_FN = {"UPPER": "{0}.str.upper()", "LOWER": "{0}.str.lower()", "TRIM": "{0}.str.strip()",
-         "LTRIM": "{0}.str.lstrip()", "RTRIM": "{0}.str.rstrip()", "ABS": "{0}.abs()", "LENGTH": "{0}.str.len()",
-         "FLOOR": "np.floor({0})", "CEIL": "np.ceil({0})"}
+PD_FN = {
+    "UPPER": "{0}.str.upper()",
+    "LOWER": "{0}.str.lower()",
+    "TRIM": "{0}.str.strip()",
+    "LTRIM": "{0}.str.lstrip()",
+    "RTRIM": "{0}.str.rstrip()",
+    "ABS": "{0}.abs()",
+    "LENGTH": "{0}.str.len()",
+    "FLOOR": "np.floor({0})",
+    "CEIL": "np.ceil({0})",
+}
 
 
 class PandasUnsupported(Exception):
@@ -319,8 +379,21 @@ def _pd_expr(e: dict, frame: str, colmap: dict[str, str]) -> str:
     if "op" in e:
         op = e["op"].upper()
         a = [_pd_expr(x, frame, colmap) for x in e["args"]]
-        m = {"+": "+", "-": "-", "*": "*", "/": "/", "=": "==", "!=": "!=", "<>": "!=", "<": "<", "<=": "<=",
-             ">": ">", ">=": ">=", "AND": "&", "OR": "|"}
+        m = {
+            "+": "+",
+            "-": "-",
+            "*": "*",
+            "/": "/",
+            "=": "==",
+            "!=": "!=",
+            "<>": "!=",
+            "<": "<",
+            "<=": "<=",
+            ">": ">",
+            ">=": ">=",
+            "AND": "&",
+            "OR": "|",
+        }
         if op in m:
             return f"({a[0]} {m[op]} {a[1]})"
         if op == "IS NULL":
@@ -353,13 +426,19 @@ def _pd_expr(e: dict, frame: str, colmap: dict[str, str]) -> str:
 def compile_visual_to_pandas(spec: dict, columns_by_alias: dict[str, list[str]]) -> str:
     """Generate an equivalent pandas transform() for common specs (filters, joins, scalar + aggregate columns)."""
     srcs = spec["sources"]
-    L = ["import numpy as np", "import pandas as pd", "", "",
-         "def _round_half_up(s, n):",
-         "    # Half-up rounding (away from zero), matching SQL ROUND semantics.",
-         "    f = 10 ** n",
-         "    return np.sign(s) * np.floor(np.abs(s) * f + 0.5 + 1e-9) / f",
-         "", "",
-         "def transform(sources):"]
+    L = [
+        "import numpy as np",
+        "import pandas as pd",
+        "",
+        "",
+        "def _round_half_up(s, n):",
+        "    # Half-up rounding (away from zero), matching SQL ROUND semantics.",
+        "    f = 10 ** n",
+        "    return np.sign(s) * np.floor(np.abs(s) * f + 0.5 + 1e-9) / f",
+        "",
+        "",
+        "def transform(sources):",
+    ]
     colmap: dict[str, str] = {}
     first = True
     for s in srcs:
@@ -406,7 +485,7 @@ def compile_visual_to_pandas(spec: dict, columns_by_alias: dict[str, list[str]])
         for name, col, how in aggdefs:
             L.append(f'        "{name}": ("{col}", {how}),')
         L.append("    }).reset_index()")
-        L.append(f'    out = out.rename(columns={{{", ".join(repr(k) + ": " + repr(k[3:]) for k in gb)}}})')
+        L.append(f"    out = out.rename(columns={{{', '.join(repr(k) + ': ' + repr(k[3:]) for k in gb)}}})")
         for t, e in post.items():
             L.append(f'    out["{t}"] = {e}')
         L.append(f"    out = out[{[c['target'] for c in cols]!r}]")
@@ -425,8 +504,14 @@ def _pd_post(e: dict, colmap, aggdefs, holder, L, idx) -> str:
             aggdefs.append((name, f"_in{n}", '"sum"'))
         else:
             L.append(f'    df["_in{n}"] = {_pd_expr(e["args"][0], "df", colmap)}')
-            how = {"SUM": 'lambda s: s.sum(min_count=1)', "COUNT": '"count"', "AVG": '"mean"', "MIN": '"min"',
-                   "MAX": '"max"', "COUNT_DISTINCT": '"nunique"'}[fn]
+            how = {
+                "SUM": "lambda s: s.sum(min_count=1)",
+                "COUNT": '"count"',
+                "AVG": '"mean"',
+                "MIN": '"min"',
+                "MAX": '"max"',
+                "COUNT_DISTINCT": '"nunique"',
+            }[fn]
             aggdefs.append((name, f"_in{n}", how))
         return f'out["{name}"]'
     if "fn" in e:

@@ -29,8 +29,13 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     s = get_settings()
     app = FastAPI(title="Jira-Driven S2T QA Validation Agent", version="0.1.0", lifespan=lifespan)
-    app.add_middleware(CORSMiddleware, allow_origins=s.cors_origins, allow_credentials=False,
-                       allow_methods=["*"], allow_headers=["Authorization", "Content-Type"])
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=s.cors_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):

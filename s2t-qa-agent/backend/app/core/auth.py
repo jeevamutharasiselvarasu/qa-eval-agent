@@ -4,6 +4,7 @@ QA_AUTH_TOKENS="tokenA:alice:approver:retail|finance,tokenB:bob:analyst:retail"
 In QA_ENV=dev with no tokens configured, requests without a token act as a dev admin.
 This is a deliberately small layer; enterprise SSO (OIDC) is a documented gap.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

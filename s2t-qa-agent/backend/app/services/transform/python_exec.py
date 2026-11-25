@@ -13,6 +13,7 @@ Defence layers:
      user code runs (the hook cannot be removed).
 Production deployments should additionally run the worker in a network-less container (see README).
 """
+
 from __future__ import annotations
 
 import ast
@@ -30,18 +31,88 @@ from ...config import get_settings
 from .contract import ExecError
 
 # `operator` (attrgetter/methodcaller) and `string` (Formatter) are excluded: both allow dynamic attribute access.
-ALLOWED_IMPORTS = {"pandas", "numpy", "math", "datetime", "decimal", "re", "statistics", "collections",
-                   "itertools", "functools"}
-FORBIDDEN_NAMES = {"eval", "exec", "compile", "open", "__import__", "globals", "locals", "vars", "getattr",
-                   "setattr", "delattr", "input", "breakpoint", "help", "memoryview", "exit", "quit", "dir",
-                   "__builtins__", "__loader__", "__spec__", "classmethod", "staticmethod", "super", "object"}
-FORBIDDEN_ATTRS = {"system", "popen", "spawn", "fork", "load", "loads", "save", "savez", "savetxt", "loadtxt",
-                   "fromfile", "tofile", "genfromtxt", "memmap", "ctypeslib", "eval", "read_pickle", "to_pickle",
-                   "f_globals", "f_locals", "gi_frame", "cr_frame", "tb_frame", "mro", "subclasses",
-                   "attrgetter", "methodcaller", "Formatter", "vformat", "format_map", "get_field"}
-IO_ATTR_PREFIXES = ("read_", "to_csv", "to_parquet", "to_excel", "to_json", "to_sql", "to_hdf", "to_feather",
-                    "to_html", "to_clipboard", "to_latex", "to_markdown", "to_stata", "to_xml", "to_orc", "to_gbq",
-                    "to_pickle", "to_records_file", "DataFrame.from_file")
+ALLOWED_IMPORTS = {"pandas", "numpy", "math", "datetime", "decimal", "re", "statistics", "collections", "itertools", "functools"}
+FORBIDDEN_NAMES = {
+    "eval",
+    "exec",
+    "compile",
+    "open",
+    "__import__",
+    "globals",
+    "locals",
+    "vars",
+    "getattr",
+    "setattr",
+    "delattr",
+    "input",
+    "breakpoint",
+    "help",
+    "memoryview",
+    "exit",
+    "quit",
+    "dir",
+    "__builtins__",
+    "__loader__",
+    "__spec__",
+    "classmethod",
+    "staticmethod",
+    "super",
+    "object",
+}
+FORBIDDEN_ATTRS = {
+    "system",
+    "popen",
+    "spawn",
+    "fork",
+    "load",
+    "loads",
+    "save",
+    "savez",
+    "savetxt",
+    "loadtxt",
+    "fromfile",
+    "tofile",
+    "genfromtxt",
+    "memmap",
+    "ctypeslib",
+    "eval",
+    "read_pickle",
+    "to_pickle",
+    "f_globals",
+    "f_locals",
+    "gi_frame",
+    "cr_frame",
+    "tb_frame",
+    "mro",
+    "subclasses",
+    "attrgetter",
+    "methodcaller",
+    "Formatter",
+    "vformat",
+    "format_map",
+    "get_field",
+}
+IO_ATTR_PREFIXES = (
+    "read_",
+    "to_csv",
+    "to_parquet",
+    "to_excel",
+    "to_json",
+    "to_sql",
+    "to_hdf",
+    "to_feather",
+    "to_html",
+    "to_clipboard",
+    "to_latex",
+    "to_markdown",
+    "to_stata",
+    "to_xml",
+    "to_orc",
+    "to_gbq",
+    "to_pickle",
+    "to_records_file",
+    "DataFrame.from_file",
+)
 WORKER = Path(__file__).with_name("python_worker.py")
 
 
@@ -67,7 +138,9 @@ def validate_python(code: str) -> tuple[list[ExecError], list[str]]:
             mods = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""]
             for m in mods:
                 if (m or "").split(".")[0] not in ALLOWED_IMPORTS or (isinstance(node, ast.ImportFrom) and node.level):
-                    errors.append(ExecError(f"Import of '{m}' is not allowed. Allowed: {', '.join(sorted(ALLOWED_IMPORTS))}", ln, kind="SAFETY"))
+                    errors.append(
+                        ExecError(f"Import of '{m}' is not allowed. Allowed: {', '.join(sorted(ALLOWED_IMPORTS))}", ln, kind="SAFETY")
+                    )
         elif isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
             errors.append(ExecError(f"Use of '{node.id}' is not allowed", ln, kind="SAFETY"))
         elif isinstance(node, ast.Attribute):
@@ -83,6 +156,7 @@ def validate_python(code: str) -> tuple[list[ExecError], list[str]]:
                 errors.append(ExecError("str.format() is only allowed on a literal template; use an f-string", ln, kind="SAFETY"))
             else:
                 import string as _string
+
                 try:
                     fields = [f for _, f, _, _ in _string.Formatter().parse(recv.value) if f]
                 except ValueError:
@@ -115,18 +189,26 @@ def _limits(mem_mb: int, cpu_s: int):
 
     def apply():  # runs in the child before exec
         import resource
+
         os.setsid()
-        for res, val in ((resource.RLIMIT_AS, mem_mb * 1024 * 1024), (resource.RLIMIT_CPU, cpu_s),
-                         (resource.RLIMIT_FSIZE, 2 * 1024 ** 3), (resource.RLIMIT_NOFILE, 256), (resource.RLIMIT_CORE, 0)):
+        for res, val in (
+            (resource.RLIMIT_AS, mem_mb * 1024 * 1024),
+            (resource.RLIMIT_CPU, cpu_s),
+            (resource.RLIMIT_FSIZE, 2 * 1024**3),
+            (resource.RLIMIT_NOFILE, 256),
+            (resource.RLIMIT_CORE, 0),
+        ):
             try:  # some platforms (e.g. macOS for RLIMIT_AS) reject individual limits; apply the rest
                 resource.setrlimit(res, (val, val + 1 if res == resource.RLIMIT_CPU else val))
             except (ValueError, OSError):
                 pass
+
     return apply
 
 
-def execute_python(code: str, inputs: dict[str, Path], output_path: Path, *, limit: int | None = None,
-                   timeout_s: int | None = None) -> tuple[list[ExecError], list[str], int, list[dict], list[str]]:
+def execute_python(
+    code: str, inputs: dict[str, Path], output_path: Path, *, limit: int | None = None, timeout_s: int | None = None
+) -> tuple[list[ExecError], list[str], int, list[dict], list[str]]:
     """Returns (errors, logs, row_count, schema, warnings)."""
     s = get_settings()
     timeout_s = timeout_s or s.python_timeout_s
@@ -137,16 +219,38 @@ def execute_python(code: str, inputs: dict[str, Path], output_path: Path, *, lim
         job = Path(td) / "job.json"
         result = Path(td) / "result.json"
         tmp_out = Path(td) / "out.parquet"
-        job.write_text(json.dumps({"code": code, "inputs": {k: str(v) for k, v in inputs.items()},
-                                   "output": str(tmp_out), "result": str(result), "limit": limit}))
-        env = {"PATH": os.defpath, "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
-               "PYTHONDONTWRITEBYTECODE": "1", "HOME": td, "TMPDIR": td}
+        job.write_text(
+            json.dumps(
+                {
+                    "code": code,
+                    "inputs": {k: str(v) for k, v in inputs.items()},
+                    "output": str(tmp_out),
+                    "result": str(result),
+                    "limit": limit,
+                }
+            )
+        )
+        env = {
+            "PATH": os.defpath,
+            "OPENBLAS_NUM_THREADS": "1",
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "HOME": td,
+            "TMPDIR": td,
+        }
         if IS_WINDOWS:  # Python on Windows needs SYSTEMROOT to start; TEMP/TMP point at the job dir
             env.update({"SYSTEMROOT": os.environ.get("SYSTEMROOT", r"C:\Windows"), "TEMP": td, "TMP": td})
         t0 = time.perf_counter()
-        proc = subprocess.Popen([sys.executable, "-I", "-S", str(WORKER), str(job)], cwd=td, env=env,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                                preexec_fn=_limits(s.python_memory_mb, timeout_s + 1))
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "-S", str(WORKER), str(job)],
+            cwd=td,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            preexec_fn=_limits(s.python_memory_mb, timeout_s + 1),
+        )
         try:
             out, err = proc.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
@@ -155,9 +259,15 @@ def execute_python(code: str, inputs: dict[str, Path], output_path: Path, *, lim
             else:
                 os.killpg(proc.pid, signal.SIGKILL)
             proc.communicate()
-            return [ExecError(f"Python transformation exceeded the {timeout_s}s execution limit and was killed", kind="TIMEOUT")], [], 0, [], warnings
+            return (
+                [ExecError(f"Python transformation exceeded the {timeout_s}s execution limit and was killed", kind="TIMEOUT")],
+                [],
+                0,
+                [],
+                warnings,
+            )
         dur = int((time.perf_counter() - t0) * 1000)
-        logs = [l for l in out.decode("utf-8", "replace").splitlines()][-200:]
+        logs = out.decode("utf-8", "replace").splitlines()[-200:]
         if not result.exists():
             tail = err.decode("utf-8", "replace")[-1500:]
             msg = "Python worker terminated abnormally"

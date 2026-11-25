@@ -1,5 +1,6 @@
 """TransformationOrchestrator: the single deterministic execution entry point for SQL, PYTHON and VISUAL
-definitions. Used by previews, actual expected-target generation and synthetic expected-target generation."""
+definitions. Used by previews and expected-target generation."""
+
 from __future__ import annotations
 
 import time
@@ -32,15 +33,25 @@ def validate_definition(defn: TransformationDefinition) -> dict:
     if errs:
         return {"valid": False, "errors": [e.to_dict() for e in errs], "warnings": [], "compiled_sql": None}
     errs, warns, refs = validate_sql(sql or "", set(defn.inputs))
-    return {"valid": not errs, "errors": [e.to_dict() for e in errs], "warnings": warns,
-            "compiled_sql": sql if defn.mode == "VISUAL" else None, "referenced_datasets": sorted(refs)}
+    return {
+        "valid": not errs,
+        "errors": [e.to_dict() for e in errs],
+        "warnings": warns,
+        "compiled_sql": sql if defn.mode == "VISUAL" else None,
+        "referenced_datasets": sorted(refs),
+    }
 
 
-def execute(defn: TransformationDefinition, output_path: Path, *, limit: int | None = None,
-            input_fingerprints: dict[str, str] | None = None) -> TransformationResult:
-    res = TransformationResult(execution_id="TEX-" + uuid.uuid4().hex[:10].upper(), transformation_id=defn.transformation_id,
-                               status="FAILED", code_version=f"v{defn.version}:{defn.content_hash}",
-                               input_fingerprints=input_fingerprints or {})
+def execute(
+    defn: TransformationDefinition, output_path: Path, *, limit: int | None = None, input_fingerprints: dict[str, str] | None = None
+) -> TransformationResult:
+    res = TransformationResult(
+        execution_id="TEX-" + uuid.uuid4().hex[:10].upper(),
+        transformation_id=defn.transformation_id,
+        status="FAILED",
+        code_version=f"v{defn.version}:{defn.content_hash}",
+        input_fingerprints=input_fingerprints or {},
+    )
     t0 = time.perf_counter()
     cfg = defn.execution_configuration or {}
     if defn.mode in ("SQL", "VISUAL"):

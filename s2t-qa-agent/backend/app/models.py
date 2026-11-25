@@ -3,10 +3,11 @@
 Large datasets and report artifacts live in run-scoped file storage; tables hold references,
 fingerprints and metadata only.
 """
+
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
@@ -26,7 +27,7 @@ from .db import Base
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def new_id(prefix: str) -> str:
@@ -115,9 +116,9 @@ class Dataset(Base):
     __tablename__ = "qa_datasets"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("DS"))
     run_id: Mapped[str] = mapped_column(ForeignKey("qa_runs.id", ondelete="CASCADE"), index=True)
-    # SOURCE | TARGET | ACTUAL_EXPECTED | SYNTHETIC_SOURCE | SYNTHETIC_EXPECTED | SYNTHETIC_OUTPUT | PREVIEW
+    # SOURCE | TARGET | ACTUAL_EXPECTED | PREVIEW
     role: Mapped[str] = mapped_column(String(32), index=True)
-    track: Mapped[str] = mapped_column(String(16), default="ACTUAL")  # ACTUAL | SYNTHETIC
+    track: Mapped[str] = mapped_column(String(16), default="ACTUAL")  # ACTUAL (legacy runs may hold SYNTHETIC)
     alias: Mapped[str] = mapped_column(String(64))  # SQL table name / python sources key
     label: Mapped[str] = mapped_column(String(200), default="")
     filename: Mapped[str] = mapped_column(String(255), default="")
@@ -171,7 +172,7 @@ class Transformation(Base):
     is_primary: Mapped[bool] = mapped_column(Boolean, default=True)
     current_version: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    versions: Mapped[list["TransformationVersion"]] = relationship(
+    versions: Mapped[list[TransformationVersion]] = relationship(
         back_populates="transformation", order_by="TransformationVersion.version", cascade="all, delete-orphan"
     )
 
@@ -203,7 +204,7 @@ class TransformationExecution(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("TEX"))
     run_id: Mapped[str] = mapped_column(ForeignKey("qa_runs.id", ondelete="CASCADE"), index=True)
     transformation_version_id: Mapped[str] = mapped_column(ForeignKey("qa_transformation_versions.id"))
-    purpose: Mapped[str] = mapped_column(String(32))  # PREVIEW | ACTUAL_EXPECTED | SYNTHETIC_EXPECTED | SYNTHETIC_RERUN
+    purpose: Mapped[str] = mapped_column(String(32))  # PREVIEW | ACTUAL_EXPECTED
     scenario_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(16))
     output_dataset_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -218,34 +219,12 @@ class TransformationExecution(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
-class SyntheticScenario(Base):
-    __tablename__ = "qa_test_scenarios"
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    run_id: Mapped[str] = mapped_column(ForeignKey("qa_runs.id", ondelete="CASCADE"), primary_key=True, index=True)
-    scenario_type: Mapped[str] = mapped_column(String(48))
-    name: Mapped[str] = mapped_column(String(200))
-    description: Mapped[str] = mapped_column(Text, default="")
-    seed: Mapped[int] = mapped_column(Integer, default=42)
-    records: Mapped[int] = mapped_column(Integer, default=10)
-    status: Mapped[str] = mapped_column(String(24), default="PENDING")  # PENDING | GENERATED | BLOCKED | ERROR
-    blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    gap_ids: Mapped[list] = mapped_column(JSON, default=list)
-    requirement_ids: Mapped[list] = mapped_column(JSON, default=list)
-    source_dataset_ids: Mapped[dict] = mapped_column(JSON, default=dict)  # alias -> dataset id
-    expected_dataset_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    transformation_version_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    explanation: Mapped[list] = mapped_column(JSON, default=list)
-    assumptions: Mapped[list] = mapped_column(JSON, default=list)
-    generation_method: Mapped[str] = mapped_column(String(64), default="SEEDED_RULE_BASED")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
 class TestCase(Base):
     __tablename__ = "qa_test_cases"
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("qa_runs.id", ondelete="CASCADE"), primary_key=True, index=True)
     scenario_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    track: Mapped[str] = mapped_column(String(16))  # ACTUAL | SYNTHETIC
+    track: Mapped[str] = mapped_column(String(16), default="ACTUAL")  # ACTUAL
     category: Mapped[str] = mapped_column(String(48))
     title: Mapped[str] = mapped_column(String(300))
     description: Mapped[str] = mapped_column(Text, default="")
@@ -291,7 +270,7 @@ class Execution(Base):
     __tablename__ = "qa_executions"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("EXE"))
     run_id: Mapped[str] = mapped_column(ForeignKey("qa_runs.id", ondelete="CASCADE"), index=True)
-    track: Mapped[str] = mapped_column(String(16))  # ACTUAL | SYNTHETIC
+    track: Mapped[str] = mapped_column(String(16), default="ACTUAL")  # ACTUAL
     status: Mapped[str] = mapped_column(String(24))  # QUEUED | RUNNING | COMPLETED | PARTIAL_SUCCESS | FAILED | INTERRUPTED | CANCELLED
     idempotency_key: Mapped[str] = mapped_column(String(80), index=True)
     transformation_version_id: Mapped[str | None] = mapped_column(String(32), nullable=True)

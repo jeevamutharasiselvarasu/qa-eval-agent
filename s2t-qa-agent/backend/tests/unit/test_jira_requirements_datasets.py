@@ -1,4 +1,5 @@
 """Jira adapters (mock + Cloud via mocked HTTP), requirement intelligence, parsing and profiling."""
+
 import json
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from app.services.datasets import DatasetError, parse_file, profile_parquet
 from app.services.jira import JiraCloudConnector, JiraError, MockJiraConnector, adf_to_text, validate_key
 from app.services.requirements import analyze
 
-FIX = Path(__file__).resolve().parents[1] / "fixtures" / "jira" / "DATA-1234.json"
+FIX = Path(__file__).resolve().parents[2] / "fixtures" / "jira" / "DATA-1234.json"
 
 
 # ------------------------------------------------------------------ Jira
@@ -27,9 +28,18 @@ def test_mock_connector_and_key_validation():
 
 
 def test_adf_conversion():
-    adf = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Acceptance Criteria"}]},
-                                      {"type": "bulletList", "content": [{"type": "listItem", "content": [
-                                          {"type": "paragraph", "content": [{"type": "text", "text": "X must be unique"}]}]}]}]}
+    adf = {
+        "type": "doc",
+        "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "Acceptance Criteria"}]},
+            {
+                "type": "bulletList",
+                "content": [
+                    {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "X must be unique"}]}]}
+                ],
+            },
+        ],
+    }
     assert "Acceptance Criteria" in adf_to_text(adf) and "- X must be unique" in adf_to_text(adf)
 
 
@@ -45,17 +55,50 @@ def test_cloud_connector_success(monkeypatch):
     def handler(req: httpx.Request):
         p = req.url.path
         if p.endswith("/comment"):
-            return httpx.Response(200, json={"comments": [{"id": "1", "author": {"displayName": "BA"},
-                                                           "body": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "What about nulls?"}]}]}}]})
+            return httpx.Response(
+                200,
+                json={
+                    "comments": [
+                        {
+                            "id": "1",
+                            "author": {"displayName": "BA"},
+                            "body": {
+                                "type": "doc",
+                                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "What about nulls?"}]}],
+                            },
+                        }
+                    ]
+                },
+            )
         if "/attachment/content/" in p:
             return httpx.Response(200, content=b"source_dataset,source_column,target_column,rule\na,X,X,direct\n")
-        return httpx.Response(200, json={"key": "DATA-1", "id": "10", "names": {"customfield_1": "Acceptance Criteria"}, "fields": {
-            "summary": "S", "description": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "AC1: X must be unique."}]}]},
-            "customfield_1": "Y cannot be null", "issuetype": {"name": "Story"}, "status": {"name": "Open"}, "labels": ["l"],
-            "components": [{"name": "c"}], "project": {"key": "DATA", "name": "D"},
-            "attachment": [{"id": "5", "filename": "m.csv", "size": 50, "mimeType": "text/csv"},
-                           {"id": "6", "filename": "big.png", "size": 50, "mimeType": "image/png"}],
-            "issuelinks": [{"type": {"name": "blocks"}, "outwardIssue": {"key": "DATA-2", "fields": {"summary": "x"}}}]}})
+        return httpx.Response(
+            200,
+            json={
+                "key": "DATA-1",
+                "id": "10",
+                "names": {"customfield_1": "Acceptance Criteria"},
+                "fields": {
+                    "summary": "S",
+                    "description": {
+                        "type": "doc",
+                        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "AC1: X must be unique."}]}],
+                    },
+                    "customfield_1": "Y cannot be null",
+                    "issuetype": {"name": "Story"},
+                    "status": {"name": "Open"},
+                    "labels": ["l"],
+                    "components": [{"name": "c"}],
+                    "project": {"key": "DATA", "name": "D"},
+                    "attachment": [
+                        {"id": "5", "filename": "m.csv", "size": 50, "mimeType": "text/csv"},
+                        {"id": "6", "filename": "big.png", "size": 50, "mimeType": "image/png"},
+                    ],
+                    "issuelinks": [{"type": {"name": "blocks"}, "outwardIssue": {"key": "DATA-2", "fields": {"summary": "x"}}}],
+                },
+            },
+        )
+
     d = _cloud(monkeypatch, handler).fetch("DATA-1")
     assert d.source == "LIVE" and "AC1" in d.description and d.custom_fields["Acceptance Criteria"] == "Y cannot be null"
     assert d.comments[0]["body"].strip() == "What about nulls?"
@@ -63,7 +106,9 @@ def test_cloud_connector_success(monkeypatch):
     assert d.links[0]["key"] == "DATA-2"
 
 
-@pytest.mark.parametrize("status,code", [(401, "UNAUTHORIZED"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (429, "RATE_LIMITED"), (500, "UPSTREAM")])
+@pytest.mark.parametrize(
+    "status,code", [(401, "UNAUTHORIZED"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (429, "RATE_LIMITED"), (500, "UPSTREAM")]
+)
 def test_cloud_connector_errors(monkeypatch, status, code):
     c = _cloud(monkeypatch, lambda req: httpx.Response(status, json={}))
     with pytest.raises(JiraError) as e:
@@ -74,6 +119,7 @@ def test_cloud_connector_errors(monkeypatch, status, code):
 def test_cloud_connector_timeout_and_config(monkeypatch):
     def boom(req):
         raise httpx.ReadTimeout("slow")
+
     with pytest.raises(JiraError) as e:
         _cloud(monkeypatch, boom).fetch("DATA-1")
     assert e.value.code == "TIMEOUT"
@@ -88,8 +134,17 @@ def test_cloud_connector_timeout_and_config(monkeypatch):
 def test_requirement_extraction_provenance_and_gaps():
     res = analyze(json.loads(FIX.read_text()))
     kinds = {(r.kind, r.ac_id) for r in res.requirements}
-    for k in [("BUSINESS_KEY", "AC1"), ("UNIQUE_KEY", "AC1"), ("NOT_NULL", "AC1"), ("DERIVED_COLUMN", "AC2"), ("DIRECT_MAPPING", "AC3"),
-              ("FILTER", "AC4"), ("DERIVED_COLUMN", "AC5"), ("JOIN", "AC7"), ("DEFAULT_WHEN_UNMATCHED", "AC7")]:
+    for k in [
+        ("BUSINESS_KEY", "AC1"),
+        ("UNIQUE_KEY", "AC1"),
+        ("NOT_NULL", "AC1"),
+        ("DERIVED_COLUMN", "AC2"),
+        ("DIRECT_MAPPING", "AC3"),
+        ("FILTER", "AC4"),
+        ("DERIVED_COLUMN", "AC5"),
+        ("JOIN", "AC7"),
+        ("DEFAULT_WHEN_UNMATCHED", "AC7"),
+    ]:
         assert k in kinds, k
     net = next(r for r in res.requirements if r.kind == "DERIVED_COLUMN" and r.spec["target"] == "NET_AMOUNT")
     assert net.spec["precision"] == 2 and net.spec["group_by"] == ["CUSTOMER_ID"] and net.provenance == "JIRA_EXPLICIT"
@@ -102,8 +157,17 @@ def test_requirement_extraction_provenance_and_gaps():
 
 
 def test_missing_rules_become_gaps_not_inventions():
-    doc = {"summary": "x", "description": "Acceptance Criteria\nAC1: TOTAL = PRICE * QTY.\n", "comments": [],
-           "attachments": [{"filename": "m.csv", "content": "source_dataset,source_column,target_column,rule\na,PRICE,TOTAL,PRICE * QTY * 2\nb,Z,Z,direct\n"}]}
+    doc = {
+        "summary": "x",
+        "description": "Acceptance Criteria\nAC1: TOTAL = PRICE * QTY.\n",
+        "comments": [],
+        "attachments": [
+            {
+                "filename": "m.csv",
+                "content": "source_dataset,source_column,target_column,rule\na,PRICE,TOTAL,PRICE * QTY * 2\nb,Z,Z,direct\n",
+            }
+        ],
+    }
     res = analyze(doc)
     types = {g["gap_type"] for g in res.gaps}
     assert {"NO_BUSINESS_KEY", "PRECISION", "CONFLICT", "JOIN_TYPE"} <= types
@@ -137,9 +201,16 @@ def test_parsers(tmp_path):
     assert parse_file(tmp_path / "a.parquet", tmp_path / "e.parquet").row_count == 2  # parquet round-trip
 
 
-@pytest.mark.parametrize("name,content,code", [("x.csv", b"", "EMPTY_FILE"), ("x.xlsx", b"garbage", "CORRUPTED"),
-                                               ("x.parquet", b"garbage", "CORRUPTED"), ("x.exe", b"MZ", "UNSUPPORTED_FORMAT"),
-                                               ("x.json", b"{not json", "PARSE_FAILED")])
+@pytest.mark.parametrize(
+    "name,content,code",
+    [
+        ("x.csv", b"", "EMPTY_FILE"),
+        ("x.xlsx", b"garbage", "CORRUPTED"),
+        ("x.parquet", b"garbage", "CORRUPTED"),
+        ("x.exe", b"MZ", "UNSUPPORTED_FORMAT"),
+        ("x.json", b"{not json", "PARSE_FAILED"),
+    ],
+)
 def test_parser_errors(tmp_path, name, content, code):
     (tmp_path / name).write_bytes(content)
     with pytest.raises(DatasetError) as e:
@@ -148,7 +219,9 @@ def test_parser_errors(tmp_path, name, content, code):
 
 
 def test_profiler(tmp_path):
-    (tmp_path / "p.csv").write_text("ID,NAME,AMT,EMAIL,D\n1, a ,10,x@y.com,2026-01-01\n2,b,-5,z@y.com,2026-01-05\n3,,0,,2026-02-01\n3,,0,,2026-02-01\n")
+    (tmp_path / "p.csv").write_text(
+        "ID,NAME,AMT,EMAIL,D\n1, a ,10,x@y.com,2026-01-01\n2,b,-5,z@y.com,2026-01-05\n3,,0,,2026-02-01\n3,,0,,2026-02-01\n"
+    )
     parse_file(tmp_path / "p.csv", tmp_path / "p.parquet")
     p = profile_parquet(tmp_path / "p.parquet")
     cols = {c["name"]: c for c in p["columns"]}

@@ -1,8 +1,9 @@
-"""Test pack = synthetic scenarios + all test cases, built from the current requirements, data, mappings and
-transformation. Workflow with two approvals:
+"""Test pack = all test cases, built from the current requirements, data, target column rules and transformation.
+Workflow with two approvals:
   1. approve the transformation (Transformation Studio),
-  2. approve the test pack (requirements, data, mappings, test cases, synthetic data and settings in one decision).
+  2. approve the test pack (requirements, data, target column rules, test cases and settings in one decision).
 """
+
 from __future__ import annotations
 
 import threading
@@ -13,39 +14,46 @@ from sqlalchemy.orm import Session
 
 from ..core.common import audit, record_error, set_state, sha256_obj
 from ..db import session_scope
-from ..models import ColumnMapping, Execution, QARun, SyntheticScenario, TestCase
+from ..models import ColumnMapping, Execution, QARun, TestCase
 from . import approvals as approval_svc
 from . import execution as exec_svc
+from . import logic_tests, studio, testgen
 from . import reports as report_svc
-from . import logic_tests, studio, synthetic, testgen
 
-PACK_ARTIFACTS = ["REQUIREMENTS", "DATASETS", "MAPPINGS", "TEST_CASES", "SYNTHETIC_DATA", "EXECUTION_SETTINGS"]
+PACK_ARTIFACTS = ["REQUIREMENTS", "DATASETS", "MAPPINGS", "TEST_CASES", "EXECUTION_SETTINGS"]
 
 
 def basis(db: Session, run: QARun) -> str:
     st = approval_svc.approval_state(db, run.id)
     v = approval_svc.current_version(db, run.id)
-    return sha256_obj({k: st[k]["current_hash"] for k in ("REQUIREMENTS", "DATASETS", "MAPPINGS", "EXECUTION_SETTINGS")}
-                      | {"transformation": v.content_hash if v else None})
+    return sha256_obj(
+        {k: st[k]["current_hash"] for k in ("REQUIREMENTS", "DATASETS", "MAPPINGS", "EXECUTION_SETTINGS")}
+        | {"transformation": v.content_hash if v else None}
+    )
 
 
 def status(db: Session, run: QARun) -> dict:
     st = approval_svc.approval_state(db, run.id)
     v = approval_svc.current_version(db, run.id)
-    scen = list(db.scalars(select(SyntheticScenario).where(SyntheticScenario.run_id == run.id)))
     tcs = list(db.scalars(select(TestCase).where(TestCase.run_id == run.id)))
     built = run.test_pack_basis is not None and bool(tcs)
-    stale = built and run.test_pack_basis != basis(db, run)
+    stale = built and (run.test_pack_basis != basis(db, run) or any(t.track != "ACTUAL" for t in tcs))  # legacy synthetic tests
     by_type = {k: sum(1 for t in tcs if t.test_type == k) for k in ("POSITIVE", "NEGATIVE", "EDGE", "GENERAL")}
     by_basis = {k: sum(1 for t in tcs if t.basis == k) for k in ("ACCEPTANCE_CRITERIA", "TRANSFORMATION_LOGIC", "GENERAL")}
     selected = [t for t in tcs if t.selected is not False]
     ignored_reqs = []
     from ..models import Requirement
+
     for r in db.scalars(select(Requirement).where(Requirement.run_id == run.id, Requirement.status == "PROPOSED")):
         ignored_reqs.append({"id": r.id, "description": r.description, "provenance": r.provenance})
-    ignored_maps = [{"id": m.id, "target": m.target_column, "notes": m.notes} for m in
-                    db.scalars(select(ColumnMapping).where(ColumnMapping.run_id == run.id, ColumnMapping.status == "PROPOSED",
-                                                           ColumnMapping.mapping_type != "UNMAPPED_SOURCE"))]
+    ignored_maps = [
+        {"id": m.id, "target": m.target_column, "notes": m.notes}
+        for m in db.scalars(
+            select(ColumnMapping).where(
+                ColumnMapping.run_id == run.id, ColumnMapping.status == "PROPOSED", ColumnMapping.mapping_type != "UNMAPPED_SOURCE"
+            )
+        )
+    ]
     pack_approved = all(st[k]["status"] == "APPROVED" for k in PACK_ARTIFACTS if st[k]["status"] != "NOT_READY")
     blockers = []
     if not v:
@@ -56,38 +64,46 @@ def status(db: Session, run: QARun) -> dict:
         blockers.append("Test pack has not been built")
     elif stale:
         blockers.append("Inputs changed since the test pack was built: rebuild it")
-    if v and any(s.status == "GENERATED" and s.transformation_version_id != v.id for s in scen):
-        blockers.append("Synthetic data was produced by an older transformation version: rebuild the test pack")
-    return {"built": built, "stale": stale, "transformation": st["TRANSFORMATION"]["status"],
-            "transformation_version": v.version if v else None, "pack_approved": pack_approved and built and not stale,
-            "artifacts": {k: st[k] for k in PACK_ARTIFACTS}, "test_cases": len(tcs), "by_type": by_type, "by_basis": by_basis,
-            "logic_note": logic_tests.note(v) if v else None,
-            "selected": len(selected), "selected_runnable": sum(1 for t in selected if t.state == "READY"),
-            "blocked_tests": sum(1 for t in tcs if t.state == "BLOCKED"),
-            "scenarios": {"total": len(scen), "generated": sum(s.status == "GENERATED" for s in scen),
-                          "blocked": sum(s.status == "BLOCKED" for s in scen), "error": sum(s.status == "ERROR" for s in scen)},
-            "ignored_requirements": ignored_reqs, "ignored_mappings": ignored_maps, "can_approve": not blockers,
-            "blockers": blockers}
+    return {
+        "built": built,
+        "stale": stale,
+        "transformation": st["TRANSFORMATION"]["status"],
+        "transformation_version": v.version if v else None,
+        "pack_approved": pack_approved and built and not stale,
+        "artifacts": {k: st[k] for k in PACK_ARTIFACTS},
+        "test_cases": len(tcs),
+        "by_type": by_type,
+        "by_basis": by_basis,
+        "logic_note": logic_tests.note(v) if v else None,
+        "selected": len(selected),
+        "selected_runnable": sum(1 for t in selected if t.state == "READY"),
+        "blocked_tests": sum(1 for t in tcs if t.state == "BLOCKED"),
+        "ignored_requirements": ignored_reqs,
+        "ignored_mappings": ignored_maps,
+        "can_approve": not blockers,
+        "blockers": blockers,
+    }
 
 
 def build(db: Session, run: QARun, actor: str) -> dict:
-    """Create a draft transformation if none exists, then (re)generate synthetic data and all test cases."""
+    """Generate the SQL from the requirements if none exists yet, then (re)build all test cases."""
     v = approval_svc.current_version(db, run.id)
     notes = []
     if not v:
         from . import target_spec
+
         spec = target_spec.build_spec(db, run)
         if not spec["ready"]:
-            raise ValueError(f"The requirements are not complete ({len(spec['open_items'])} open item(s)). Complete them on "
-                             "the Requirements tab; the SQL and the test pack are then generated automatically.")
+            raise ValueError(
+                f"The requirements are not complete ({len(spec['open_items'])} open item(s)). Complete them on "
+                "the Requirements tab; the SQL and the test pack are then generated automatically."
+            )
         v = studio.ai_generate(db, run, "SQL", "", actor)
         v.requirements_basis = target_spec.requirements_basis(db, run.id)
         set_state(db, run, "TRANSFORMATION_DESIGNED", actor)
         notes.append(f"SQL transformation v{v.version} generated from the requirements")
-    if (v.validation or {}).get("valid"):
-        synthetic.generate(db, run, actor)
-    else:
-        notes.append("Current transformation fails validation, so synthetic scenarios were not regenerated")
+    if not (v.validation or {}).get("valid"):
+        notes.append("The current SQL fails validation; tests that need its output will report ERROR until it is fixed")
     tcs = testgen.generate_test_pack(db, run, actor)
     db.flush()
     run.test_pack_basis = basis(db, run)
@@ -125,12 +141,8 @@ def approve(db: Session, run: QARun, actor: str, decision: str, reason: str = ""
 
 # ------------------------------------------------------------------ one-click validation
 def start_validation(db: Session, run: QARun, actor: str, force: bool = False) -> list[Execution]:
-    """Run the SELECTED test cases: Track A (uploaded data) and/or Track B (synthetic data), whichever has selected
-    tests; a report covering exactly those results is generated at the end."""
-    tracks = [t for t in ("ACTUAL", "SYNTHETIC") if exec_svc.selected_ids(db, run, t)]
-    if "SYNTHETIC" in tracks and not db.scalars(select(SyntheticScenario).where(
-            SyntheticScenario.run_id == run.id, SyntheticScenario.status == "GENERATED")).first():
-        tracks.remove("SYNTHETIC")
+    """Run the SELECTED test cases on the uploaded data; a report covering exactly those results is generated at the end."""
+    tracks = ["ACTUAL"] if exec_svc.selected_ids(db, run, "ACTUAL") else []
     if not tracks:
         raise exec_svc.ExecutionError("Select at least one test case to run", 400)
     started, to_run = [], []
@@ -140,8 +152,7 @@ def start_validation(db: Session, run: QARun, actor: str, force: bool = False) -
         if not reused:
             to_run.append(ex.id)
     db.commit()
-    threading.Thread(target=_run_all, args=(run.id, to_run, [e.id for e in started], actor), daemon=True,
-                     name=f"validate-{run.id}").start()
+    threading.Thread(target=_run_all, args=(run.id, to_run, [e.id for e in started], actor), daemon=True, name=f"validate-{run.id}").start()
     return started
 
 

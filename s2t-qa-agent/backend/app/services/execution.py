@@ -1,5 +1,6 @@
-"""ExecutionManager: approval-gated, idempotent, checkpointed execution of the ACTUAL and SYNTHETIC tracks.
+"""ExecutionManager: approval-gated, idempotent, checkpointed execution of the selected test cases on the uploaded data.
 Both tracks call the same transformation engine (studio.run_version) and the same ValidationEngine."""
+
 from __future__ import annotations
 
 import csv
@@ -15,8 +16,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..core.common import audit, mask_records, record_error, run_dir, set_state, sha256_obj
 from ..db import session_scope
-from ..models import (Dataset, Evidence, Execution, FailureAnalysis, LLMCall, QARun, RequirementGap, SyntheticScenario,
-                      TestCase, TestResult, utcnow)
+from ..models import Dataset, Evidence, Execution, FailureAnalysis, LLMCall, QARun, RequirementGap, TestCase, TestResult, utcnow
 from .approvals import approval_state, current_version, missing_approvals
 from .llm import get_llm, timed
 from .studio import actual_inputs, run_version
@@ -33,28 +33,35 @@ class ExecutionError(Exception):
 
 
 def selected_ids(db: Session, run: QARun, track: str) -> list[str]:
-    return sorted(t.id for t in db.scalars(select(TestCase).where(TestCase.run_id == run.id, TestCase.track == track))
-                  if t.selected is not False)
+    return sorted(
+        t.id for t in db.scalars(select(TestCase).where(TestCase.run_id == run.id, TestCase.track == track)) if t.selected is not False
+    )
 
 
 def idempotency_key(db: Session, run: QARun, track: str) -> str:
     st = approval_state(db, run.id)
     v = current_version(db, run.id)
-    fps = sorted((d.alias, d.role, d.fingerprint) for d in db.scalars(select(Dataset).where(
-        Dataset.run_id == run.id, Dataset.role.in_(["SOURCE", "TARGET"]))))
-    parts = {"track": track, "tv": v.content_hash if v else None, "datasets": fps,
-             "tests": st["TEST_CASES"]["current_hash"], "settings": st["EXECUTION_SETTINGS"]["current_hash"],
-             "mappings": st["MAPPINGS"]["current_hash"], "reqs": st["REQUIREMENTS"]["current_hash"]}
-    if track == "SYNTHETIC":
-        parts["synthetic"] = st["SYNTHETIC_DATA"]["current_hash"]
+    fps = sorted(
+        (d.alias, d.role, d.fingerprint)
+        for d in db.scalars(select(Dataset).where(Dataset.run_id == run.id, Dataset.role.in_(["SOURCE", "TARGET"])))
+    )
+    parts = {
+        "track": track,
+        "tv": v.content_hash if v else None,
+        "datasets": fps,
+        "tests": st["TEST_CASES"]["current_hash"],
+        "settings": st["EXECUTION_SETTINGS"]["current_hash"],
+        "mappings": st["MAPPINGS"]["current_hash"],
+        "reqs": st["REQUIREMENTS"]["current_hash"],
+    }
     parts["selected"] = selected_ids(db, run, track)
     return sha256_obj(parts)
 
 
 def start(db: Session, run: QARun, track: str, actor: str, force: bool = False) -> tuple[Execution, bool]:
     """Create (or reuse) an execution. Returns (execution, reused)."""
-    if track not in ("ACTUAL", "SYNTHETIC"):
-        raise ExecutionError("track must be ACTUAL or SYNTHETIC", 400)
+    if track != "ACTUAL":
+        raise ExecutionError("Only the uploaded-data track exists", 400)
     missing = missing_approvals(db, run.id, track)
     if missing:
         raise ExecutionError("Execution requires current approvals. Not approved: " + "; ".join(missing))
@@ -62,22 +69,36 @@ def start(db: Session, run: QARun, track: str, actor: str, force: bool = False) 
         raise ExecutionError("Upload the target dataset first", 400)
     chosen = selected_ids(db, run, track)
     if not chosen:
-        raise ExecutionError(f"No test cases of the {'uploaded-data' if track == 'ACTUAL' else 'synthetic'} track are selected", 400)
+        raise ExecutionError("Select at least one test case to run", 400)
     key = idempotency_key(db, run, track)
-    running = db.scalars(select(Execution).where(Execution.run_id == run.id, Execution.track == track,
-                                                 Execution.status.in_(["QUEUED", "RUNNING"]))).first()
+    running = db.scalars(
+        select(Execution).where(Execution.run_id == run.id, Execution.track == track, Execution.status.in_(["QUEUED", "RUNNING"]))
+    ).first()
     if running:
         raise ExecutionError(f"Execution {running.id} for this track is already {running.status}; duplicate execution prevented")
-    done = db.scalars(select(Execution).where(Execution.run_id == run.id, Execution.idempotency_key == key,
-                                              Execution.status == "COMPLETED").order_by(Execution.created_at.desc())).first()
+    done = db.scalars(
+        select(Execution)
+        .where(Execution.run_id == run.id, Execution.idempotency_key == key, Execution.status == "COMPLETED")
+        .order_by(Execution.created_at.desc())
+    ).first()
     if done and not force:
         audit(db, actor, "EXECUTION_REUSED", run.id, "EXECUTION", done.id, track=track)
         return done, True
     v = current_version(db, run.id)
-    ex = Execution(run_id=run.id, track=track, status="QUEUED", idempotency_key=key, transformation_version_id=v.id,
-                   settings=dict(run.settings or {}), started_by=actor, selected_test_ids=chosen,
-                   input_fingerprints={d.alias + ":" + d.role: d.fingerprint for d in db.scalars(select(Dataset).where(
-                       Dataset.run_id == run.id, Dataset.role.in_(["SOURCE", "TARGET"])))})
+    ex = Execution(
+        run_id=run.id,
+        track=track,
+        status="QUEUED",
+        idempotency_key=key,
+        transformation_version_id=v.id,
+        settings=dict(run.settings or {}),
+        started_by=actor,
+        selected_test_ids=chosen,
+        input_fingerprints={
+            d.alias + ":" + d.role: d.fingerprint
+            for d in db.scalars(select(Dataset).where(Dataset.run_id == run.id, Dataset.role.in_(["SOURCE", "TARGET"])))
+        },
+    )
     db.add(ex)
     db.flush()
     audit(db, actor, "EXECUTION_STARTED", run.id, "EXECUTION", ex.id, track=track, key=key, forced=force)
@@ -131,42 +152,35 @@ def _expected_actual(db: Session, run: QARun, ex: Execution, actor: str) -> dict
     v = current_version(db, run.id)
     units: dict[str, dict] = {}
     ids = dict(ex.expected_dataset_ids or {})
-    if ex.track == "ACTUAL":
+    if ex.track == "ACTUAL":  # the only track
         set_state(db, run, "ACTUAL_TRANSFORMATION_IN_PROGRESS", actor)
         inputs = actual_inputs(db, run.id)
         target = db.scalars(select(Dataset).where(Dataset.run_id == run.id, Dataset.role == "TARGET")).first()
         exp = db.get(Dataset, ids["ACTUAL"]) if ids.get("ACTUAL") else None
         if not exp or not Path(exp.parquet_path).exists():
-            res, exp = run_version(db, run, v, inputs, purpose="ACTUAL_EXPECTED", role="ACTUAL_EXPECTED", track="ACTUAL",
-                                   actor=actor, execution_id=ex.id, out_dir=run_dir(run.id, "expected", ex.id))
+            res, exp = run_version(
+                db,
+                run,
+                v,
+                inputs,
+                purpose="ACTUAL_EXPECTED",
+                role="ACTUAL_EXPECTED",
+                track="ACTUAL",
+                actor=actor,
+                execution_id=ex.id,
+                out_dir=run_dir(run.id, "expected", ex.id),
+            )
             if res.status != "SUCCESS":
                 raise RuntimeError("TRANSFORMATION_FAILED: " + "; ".join(e.message for e in res.errors))
             ids["ACTUAL"] = exp.id
             ex.expected_dataset_ids = ids
             db.commit()  # checkpoint
-        units["ACTUAL"] = {"expected": Path(exp.parquet_path), "actual": Path(target.parquet_path),
-                           "sources": {a: Path(d.parquet_path) for a, d in inputs.items()}, "expected_id": exp.id}
-    else:
-        set_state(db, run, "SYNTHETIC_EXECUTION_IN_PROGRESS", actor)
-        for s in db.scalars(select(SyntheticScenario).where(SyntheticScenario.run_id == run.id)):
-            if s.status != "GENERATED":
-                continue
-            if s.transformation_version_id != v.id:
-                raise RuntimeError(f"Scenario {s.id} expected target was produced by a different transformation version; regenerate")
-            srcs = {a: db.get(Dataset, i) for a, i in s.source_dataset_ids.items()}
-            out = db.get(Dataset, ids[s.id]) if ids.get(s.id) else None
-            if not out or not Path(out.parquet_path).exists():
-                res, out = run_version(db, run, v, srcs, purpose="SYNTHETIC_RERUN", role="SYNTHETIC_OUTPUT", track="SYNTHETIC",
-                                       actor=actor, scenario_id=s.id, execution_id=ex.id,
-                                       out_dir=run_dir(run.id, "synthetic", s.id, ex.id))
-                if res.status != "SUCCESS":
-                    units[s.id] = {"error": "; ".join(e.message for e in res.errors)}
-                    continue
-                ids[s.id] = out.id
-                ex.expected_dataset_ids = ids
-                db.commit()
-            units[s.id] = {"expected": Path(db.get(Dataset, s.expected_dataset_id).parquet_path), "actual": Path(out.parquet_path),
-                           "sources": {a: Path(d.parquet_path) for a, d in srcs.items()}, "expected_id": s.expected_dataset_id}
+        units["ACTUAL"] = {
+            "expected": Path(exp.parquet_path),
+            "actual": Path(target.parquet_path),
+            "sources": {a: Path(d.parquet_path) for a, d in inputs.items()},
+            "expected_id": exp.id,
+        }
     return units
 
 
@@ -181,8 +195,15 @@ def _evaluate(tc: dict, unit: dict, open_gaps: set[str], max_rows: int) -> dict:
                 out = {"status": "BLOCKED", "message": reason}
             else:
                 o = run_check(ctx, tc["validation"])
-                out = {"status": o.status, "expected": o.expected, "actual": o.actual, "message": o.message,
-                       "metrics": o.metrics, "ev_cols": o.evidence_columns, "ev_rows": o.evidence_rows}
+                out = {
+                    "status": o.status,
+                    "expected": o.expected,
+                    "actual": o.actual,
+                    "message": o.message,
+                    "metrics": o.metrics,
+                    "ev_cols": o.evidence_columns,
+                    "ev_rows": o.evidence_rows,
+                }
         finally:
             ctx.close()
     except CheckError as e:
@@ -214,14 +235,20 @@ def run_execution(execution_id: str) -> None:
                 chosen = set(ex.selected_test_ids)
                 tcs = [t for t in tcs if t.id in chosen]
             done = {r.test_case_id for r in db.scalars(select(TestResult).where(TestResult.execution_id == ex.id))}
-            open_gaps = {g.id for g in db.scalars(select(RequirementGap).where(RequirementGap.run_id == run.id,
-                                                                                RequirementGap.status.in_(["OPEN", "BLOCKED", "ACCEPTED_LIMITATION"])))}
+            open_gaps = {
+                g.id
+                for g in db.scalars(
+                    select(RequirementGap).where(
+                        RequirementGap.run_id == run.id, RequirementGap.status.in_(["OPEN", "BLOCKED", "ACCEPTED_LIMITATION"])
+                    )
+                )
+            }
             max_rows = int((ex.settings or {}).get("max_evidence_rows", 200))
             todo = []
             for tc in tcs:
                 if tc.id in done:
                     continue  # checkpointed result from a previous attempt
-                unit_key = "ACTUAL" if ex.track == "ACTUAL" else tc.scenario_id
+                unit_key = "ACTUAL"
                 unit = units.get(unit_key)
                 if tc.status == "REJECTED":
                     _store(db, ex, run, tc, {"status": "SKIPPED", "message": "Rejected by reviewer"}, None)
@@ -230,7 +257,7 @@ def run_execution(execution_id: str) -> None:
                 elif tc.state == "EXCLUDED":
                     _store(db, ex, run, tc, {"status": "SKIPPED", "message": "Excluded by configuration"}, None)
                 elif unit is None:
-                    _store(db, ex, run, tc, {"status": "BLOCKED", "message": "Scenario has no generated expected target"}, None)
+                    _store(db, ex, run, tc, {"status": "BLOCKED", "message": "No expected target was produced"}, None)
                 elif "error" in unit:
                     _store(db, ex, run, tc, {"status": "ERROR", "message": "Re-execution failed: " + unit["error"]}, None)
                 else:
@@ -238,11 +265,12 @@ def run_execution(execution_id: str) -> None:
             db.commit()
             cancelled = False
             with ThreadPoolExecutor(max_workers=max(1, s.validation_workers)) as pool:
-                futs = {pool.submit(_evaluate, {"id": tc.id, "validation": tc.validation}, unit, open_gaps, max_rows): tc
-                        for tc, unit in todo}
+                futs = {
+                    pool.submit(_evaluate, {"id": tc.id, "validation": tc.validation}, unit, open_gaps, max_rows): tc for tc, unit in todo
+                }
                 for f in as_completed(futs):
                     tc = futs[f]
-                    _store(db, ex, run, tc, f.result(), units.get("ACTUAL" if ex.track == "ACTUAL" else tc.scenario_id))
+                    _store(db, ex, run, tc, f.result(), units.get("ACTUAL"))
                     db.commit()  # checkpoint every result
                     db.refresh(ex)
                     if ex.cancel_requested and not cancelled:
@@ -268,8 +296,7 @@ def run_execution(execution_id: str) -> None:
                 if ex.selected_test_ids is not None and tc.id not in ex.selected_test_ids:
                     continue
                 if tc.id not in stored:
-                    db.add(TestResult(execution_id=ex.id, test_case_id=tc.id, status="NOT_EXECUTED",
-                                      message="Not executed: " + msg[:300]))
+                    db.add(TestResult(execution_id=ex.id, test_case_id=tc.id, status="NOT_EXECUTED", message="Not executed: " + msg[:300]))
             audit(db, actor, "EXECUTION_FAILED", run.id, "EXECUTION", ex.id, error=msg[:500])
 
 
@@ -285,20 +312,40 @@ def _store(db: Session, ex: Execution, run: QARun, tc: TestCase, out: dict, unit
             with open(path, "w", newline="") as f:
                 w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
                 w.writeheader()
-                for r in (mask_records(rows) if (ex.settings or {}).get("mask_sensitive_in_reports", True) else rows):
+                for r in mask_records(rows) if (ex.settings or {}).get("mask_sensitive_in_reports", True) else rows:
                     w.writerow(r)
-        evd = Evidence(execution_id=ex.id, test_case_id=tc.id, kind=tc.validation.get("type", ""), path=str(path) if path else None,
-                       summary={"metrics": out.get("metrics", {}), "expected_dataset": unit.get("expected_id") if unit else None,
-                                "row_count": len(rows)}, sample=mask_records(rows[:25]))
+        evd = Evidence(
+            execution_id=ex.id,
+            test_case_id=tc.id,
+            kind=tc.validation.get("type", ""),
+            path=str(path) if path else None,
+            summary={
+                "metrics": out.get("metrics", {}),
+                "expected_dataset": unit.get("expected_id") if unit else None,
+                "row_count": len(rows),
+            },
+            sample=mask_records(rows[:25]),
+        )
         db.add(evd)
         db.flush()
         ev_id = evd.id
     if out.get("status") == "ERROR":
         record_error(db, run.id, "VALIDATION", f"{tc.id}: {out.get('message', '')}", out.get("trace", ""), ex.id)
-    db.add(TestResult(execution_id=ex.id, test_case_id=tc.id, status=out["status"], expected=str(out.get("expected", ""))[:2000],
-                      actual=str(out.get("actual", ""))[:2000], message=str(out.get("message", ""))[:4000],
-                      metrics=out.get("metrics", {}), evidence_id=ev_id, duration_ms=out.get("duration_ms", 0),
-                      started_at=out.get("started_at"), ended_at=out.get("ended_at")))
+    db.add(
+        TestResult(
+            execution_id=ex.id,
+            test_case_id=tc.id,
+            status=out["status"],
+            expected=str(out.get("expected", ""))[:2000],
+            actual=str(out.get("actual", ""))[:2000],
+            message=str(out.get("message", ""))[:4000],
+            metrics=out.get("metrics", {}),
+            evidence_id=ev_id,
+            duration_ms=out.get("duration_ms", 0),
+            started_at=out.get("started_at"),
+            ended_at=out.get("ended_at"),
+        )
+    )
 
 
 def _finish(db: Session, ex: Execution, run: QARun, forced: str | None) -> None:
@@ -307,10 +354,22 @@ def _finish(db: Session, ex: Execution, run: QARun, forced: str | None) -> None:
     for r in results:
         counts[r.status] = counts.get(r.status, 0) + 1
     total = len(results)
-    overall = ("FAIL" if counts.get("FAIL") else "ERROR" if counts.get("ERROR") else
-               "BLOCKED" if counts.get("BLOCKED") and not counts.get("PASS") else "PASS_WITH_BLOCKED" if counts.get("BLOCKED") else "PASS")
-    ex.summary = {"total": total, **{k: counts.get(k, 0) for k in ("PASS", "FAIL", "BLOCKED", "ERROR", "SKIPPED", "NOT_EXECUTED")},
-                  "overall": overall}
+    overall = (
+        "FAIL"
+        if counts.get("FAIL")
+        else "ERROR"
+        if counts.get("ERROR")
+        else "BLOCKED"
+        if counts.get("BLOCKED") and not counts.get("PASS")
+        else "PASS_WITH_BLOCKED"
+        if counts.get("BLOCKED")
+        else "PASS"
+    )
+    ex.summary = {
+        "total": total,
+        **{k: counts.get(k, 0) for k in ("PASS", "FAIL", "BLOCKED", "ERROR", "SKIPPED", "NOT_EXECUTED")},
+        "overall": overall,
+    }
     ex.summary = {**ex.summary, "phase": "AI_FAILURE_ANALYSIS"}
     db.commit()  # deterministic results are final and persisted before any AI step
     try:
@@ -341,14 +400,25 @@ def analyze_failures(db: Session, ex: Execution) -> int:
         db.delete(old)
     fails = list(db.scalars(select(TestResult).where(TestResult.execution_id == ex.id, TestResult.status == "FAIL")))
     for r in fails:
-        tc = db.scalars(select(TestCase).where(
-            TestCase.run_id == run.id, TestCase.id == r.test_case_id)).first()
+        tc = db.scalars(select(TestCase).where(TestCase.run_id == run.id, TestCase.id == r.test_case_id)).first()
         ev = db.get(Evidence, r.evidence_id) if r.evidence_id else None
-        evidence = {"test_case": tc.id, "title": tc.title, "check_type": tc.validation.get("type"), "column": tc.validation.get("column"),
-                    "requirements": tc.requirement_ids, "acceptance_criteria": tc.ac_ids, "expected": r.expected, "actual": r.actual,
-                    "message": r.message, "metrics": r.metrics, "track": ex.track, "scenario": tc.scenario_id,
-                    "facts": [f"Deterministic check {tc.validation.get('type')} returned FAIL: {r.message}",
-                              f"Expected: {r.expected}; actual: {r.actual}"]}
+        evidence = {
+            "test_case": tc.id,
+            "title": tc.title,
+            "check_type": tc.validation.get("type"),
+            "column": tc.validation.get("column"),
+            "requirements": tc.requirement_ids,
+            "acceptance_criteria": tc.ac_ids,
+            "expected": r.expected,
+            "actual": r.actual,
+            "message": r.message,
+            "metrics": r.metrics,
+            "track": ex.track,
+            "facts": [
+                f"Deterministic check {tc.validation.get('type')} returned FAIL: {r.message}",
+                f"Expected: {r.expected}; actual: {r.actual}",
+            ],
+        }
         samples = (ev.sample if ev else [])[:10]
         if tc.validation.get("type") == "COLUMN_MATCH" and samples:
             evidence["sample_differences"] = samples
@@ -358,11 +428,30 @@ def analyze_failures(db: Session, ex: Execution) -> int:
         send_samples = llm.name == "mock" or s.llm_allow_data_samples
         payload = evidence if send_samples else {k: v for k, v in evidence.items() if k not in ("sample_differences", "sample_records")}
         out, ms, err = timed(llm.analyze_failure, payload)
-        db.add(LLMCall(run_id=run.id, purpose="FAILURE_ANALYSIS", provider=llm.name, sent_data_samples=send_samples and llm.name != "mock",
-                       ok=err is None, latency_ms=ms, error=err))
-        data = out.model_dump() if out else {"category": "UNAVAILABLE", "suspected_layer": "UNKNOWN", "confirmed_facts": evidence["facts"],
-                                             "likely_explanations": [], "unverified_hypotheses": [], "recommended_checks": [],
-                                             "error": err}
+        db.add(
+            LLMCall(
+                run_id=run.id,
+                purpose="FAILURE_ANALYSIS",
+                provider=llm.name,
+                sent_data_samples=send_samples and llm.name != "mock",
+                ok=err is None,
+                latency_ms=ms,
+                error=err,
+            )
+        )
+        data = (
+            out.model_dump()
+            if out
+            else {
+                "category": "UNAVAILABLE",
+                "suspected_layer": "UNKNOWN",
+                "confirmed_facts": evidence["facts"],
+                "likely_explanations": [],
+                "unverified_hypotheses": [],
+                "recommended_checks": [],
+                "error": err,
+            }
+        )
         data["evidence_id"] = r.evidence_id
         data["deterministic_status"] = r.status  # AI cannot change this
         db.add(FailureAnalysis(execution_id=ex.id, test_result_id=r.id, test_case_id=tc.id, provider=llm.name, payload=data))
@@ -377,6 +466,7 @@ def analyze_failures(db: Session, ex: Execution) -> int:
 def _source_matches(db: Session, run: QARun, tc: TestCase, samples: list[dict]) -> list[str]:
     """Deterministic fact-finding for the AI: does |difference| equal a source value for the same key?"""
     import duckdb
+
     keys = tc.validation.get("keys") or []
     if len(keys) != 1:
         return []
@@ -396,7 +486,9 @@ def _source_matches(db: Session, run: QARun, tc: TestCase, samples: list[dict]) 
                     continue
                 for c in numeric:
                     q = '"' + c + '"'
-                    n = con.execute(f'SELECT COUNT(*) FROM t WHERE "{cols[key.upper()]["name"]}" = ? AND ABS({q}) = ABS(?)', [kv, diff]).fetchone()[0]
+                    n = con.execute(
+                        f'SELECT COUNT(*) FROM t WHERE "{cols[key.upper()]["name"]}" = ? AND ABS({q}) = ABS(?)', [kv, diff]
+                    ).fetchone()[0]
                     if n:
                         hits.append(f"{key}={kv}: |difference| {abs(diff):g} equals {alias}.{c} in {n} source row(s)")
     return hits[:10]

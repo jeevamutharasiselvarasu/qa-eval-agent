@@ -1,10 +1,14 @@
-import React, { useEffect, useState, useCallback, createContext, useContext } from 'react'
+import { useEffect, useState, useCallback, createContext, useContext } from 'react'
 import { Loader2, X } from 'lucide-react'
 
 export const STATUS_COLORS = { PASS: '#1f9d55', FAIL: '#d64545', BLOCKED: '#d99a1a', ERROR: '#8e44ad', SKIPPED: '#9aa1b2', NOT_EXECUTED: '#c9ced9' }
 
+const RESULT_CODES = new Set(['PASS', 'FAIL', 'BLOCKED', 'ERROR', 'SKIPPED'])
+
+/** Status badge. Result codes stay upper-case; other codes are shown as readable words. */
 export function Badge({ s, children, title, className = '' }) {
-  return <span className={`badge ${s || ''} ${className}`} title={title}>{children ?? (s || '').replaceAll('_', ' ')}</span>
+  const text = children ?? (RESULT_CODES.has(s) ? s : humanize(s).replace(/\bAi\b/g, 'AI').replace(/\bai\b/g, 'AI').replace(/\bsql\b/gi, 'SQL'))
+  return <span className={`badge ${s || ''} ${className}`} title={title}>{text}</span>
 }
 
 export function Card({ title, actions, children, flush, className = '', sub }) {
@@ -153,4 +157,68 @@ export function Ids({ ids, max = 8 }) {
   if (!ids || !ids.length) return <span className="muted">—</span>
   const shown = ids.slice(0, max)
   return <span title={ids.join(', ')}>{shown.map(i => <span className="chip" key={i}>{i}</span>)}{ids.length > max && <span className="tiny muted"> +{ids.length - max} more</span>}</span>
+}
+
+/* ------------------------------------------------------------------ human-readable labels */
+export const RUN_STATE = {
+  RUN_CREATED: ['Created', 'neutral'], JIRA_RETRIEVAL_IN_PROGRESS: ['Reading Jira', 'info'], JIRA_RETRIEVED: ['Jira read', 'neutral'],
+  REQUIREMENTS_ANALYZED: ['Requirements read', 'neutral'], DATASETS_UPLOADED: ['Files uploaded', 'neutral'],
+  DATASETS_PROFILED: ['Files checked', 'neutral'], MAPPING_GENERATED: ['Column rules ready', 'neutral'],
+  TRANSFORMATION_DESIGNED: ['SQL ready', 'info'], TEST_CASES_GENERATED: ['Test cases ready', 'info'],
+  SYNTHETIC_DATA_GENERATED: ['Test cases ready', 'info'], AWAITING_APPROVAL: ['Awaiting approval', 'warn'], APPROVED: ['Approved', 'info'],
+  ACTUAL_TRANSFORMATION_IN_PROGRESS: ['Running', 'info'], SYNTHETIC_EXECUTION_IN_PROGRESS: ['Running', 'info'],
+  VALIDATION_IN_PROGRESS: ['Running', 'info'], VALIDATION_COMPLETED: ['Validated', 'ok'], FAILURE_ANALYSIS_COMPLETED: ['Validated', 'ok'],
+  REPORT_GENERATED: ['Report ready', 'ok'],
+  // exception states
+  JIRA_RETRIEVAL_FAILED: ['Jira error', 'bad'], REQUIREMENT_GAP: ['Needs input', 'warn'], DATASET_PARSE_FAILED: ['File error', 'bad'],
+  PROFILE_FAILED: ['File check failed', 'bad'], MAPPING_REVIEW_REQUIRED: ['Needs input', 'warn'], APPROVAL_REJECTED: ['Rejected', 'bad'],
+  TRANSFORMATION_FAILED: ['SQL error', 'bad'], EXECUTION_FAILED: ['Run failed', 'bad'], PARTIAL_SUCCESS: ['Partly completed', 'warn'],
+  CANCELLED: ['Cancelled', 'neutral'],
+}
+
+/** A run's workflow state as a readable pill (raw code in the tooltip). */
+export function StatePill({ state }) {
+  if (!state) return null
+  const [label, tone] = RUN_STATE[state] || [humanize(state), 'neutral']
+  return <span className={`pill ${tone}`} title={state}>{label}</span>
+}
+
+/** CONSTANT_CASE -> "Constant case". */
+export function humanize(code) {
+  const s = String(code || '').replaceAll('_', ' ').toLowerCase()
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+/** Placeholder lines while data loads. */
+export function Loading({ rows = 3, label = 'Loading' }) {
+  return (
+    <div className="skeleton" role="status" aria-label={label}>
+      {Array.from({ length: rows }, (_, i) => <div key={i} className="sk-line" style={{ width: `${92 - i * 14}%` }} />)}
+    </div>
+  )
+}
+
+/** Page heading with optional breadcrumb, description and actions. Also sets the browser tab title. */
+export function PageHeader({ title, description, crumbs, actions, meta, docTitle }) {
+  useEffect(() => {
+    const t = docTitle || (typeof title === 'string' ? title : '')
+    document.title = t ? `${t} · S2T QA Agent` : 'S2T QA Agent'
+  }, [docTitle, title])
+  return (
+    <div className="page-head">
+      <div className="grow">
+        {crumbs && <nav className="crumbs" aria-label="Breadcrumb">{crumbs}</nav>}
+        <h1>{title}</h1>
+        {description && <p>{description}</p>}
+        {meta && <div className="page-meta">{meta}</div>}
+      </div>
+      {actions && <div className="row wrap gap-s">{actions}</div>}
+    </div>
+  )
+}
+
+/** Initials avatar. */
+export function Avatar({ name = '' }) {
+  const ini = name.split(/[.\s_@-]+/).filter(Boolean).slice(0, 2).map(x => x[0].toUpperCase()).join('') || '?'
+  return <span className="avatar" aria-hidden="true">{ini}</span>
 }

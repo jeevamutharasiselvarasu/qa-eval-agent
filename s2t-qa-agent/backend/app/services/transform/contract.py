@@ -1,4 +1,5 @@
 """Common transformation execution contract shared by SQL, PYTHON and VISUAL modes and by both tracks."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -51,9 +52,16 @@ class TransformationResult:
 
     def to_dict(self) -> dict:
         return {
-            "execution_id": self.execution_id, "transformation_id": self.transformation_id, "status": self.status,
-            "output_schema": self.output_schema, "row_count": self.row_count, "duration_ms": self.duration_ms,
-            "logs": self.logs, "warnings": self.warnings, "errors": [e.to_dict() for e in self.errors],
-            "code_version": self.code_version, "input_fingerprints": self.input_fingerprints,
+            "execution_id": self.execution_id,
+            "transformation_id": self.transformation_id,
+            "status": self.status,
+            "output_schema": self.output_schema,
+            "row_count": self.row_count,
+            "duration_ms": self.duration_ms,
+            "logs": self.logs,
+            "warnings": self.warnings,
+            "errors": [e.to_dict() for e in self.errors],
+            "code_version": self.code_version,
+            "input_fingerprints": self.input_fingerprints,
             "compiled_sql": self.compiled_sql,
         }

@@ -1,8 +1,8 @@
-import React, { useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { RefreshCw, Upload, Eye, Trash2 } from 'lucide-react'
 import { api } from '../../api.js'
 import { useRun } from '../RunWorkspace.jsx'
-import { Badge, Btn, Card, DataTable, Empty, Modal, useAction, useLoad } from '../../components/ui.jsx'
+import { Badge, Btn, Card, DataTable, Empty, Loading, Modal, useAction, useLoad } from '../../components/ui.jsx'
 
 export default function Profiling() {
   const { runId, reload: reloadRun } = useRun()
@@ -27,7 +27,7 @@ export default function Profiling() {
           <input ref={srcRef} type="file" hidden onChange={e => e.target.files[0] && upload('sources', e.target.files[0])} />
           <input ref={tgtRef} type="file" hidden onChange={e => e.target.files[0] && upload('target', e.target.files[0])} />
         </>} flush>
-        {!profiles ? <Empty>Loading…</Empty> : !profiles.length ? <Empty>No datasets uploaded.</Empty> : (
+        {!profiles ? <Loading /> : !profiles.length ? <Empty>No datasets uploaded.</Empty> : (
           <div className="tw"><table className="t">
             <thead><tr><th>Role</th><th>Alias</th><th>File</th><th className="num">Rows</th><th className="num">Cols</th><th>Candidate keys</th><th>Feeds target</th><th>Fingerprint</th><th /></tr></thead>
             <tbody>{profiles.map(({ dataset: d, profile: p }) => (

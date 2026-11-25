@@ -1,4 +1,5 @@
 """Transformation engine: SQL/Python safety, limits, visual compilation and mode equivalence."""
+
 import os
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from app.services.transform.python_exec import execute_python, validate_python
 from app.services.transform.sql_exec import execute_sql, validate_sql
 from app.services.transform.visual import VisualSpecError, compile_visual, compile_visual_to_pandas, sql_to_expr
 
-SAMPLES = Path(__file__).resolve().parents[2] / "sample_data"
+SAMPLES = Path(__file__).resolve().parents[3] / "sample_data"
 
 
 @pytest.fixture
@@ -26,26 +27,29 @@ def inputs(tmp_path):
     return out
 
 
-@pytest.mark.parametrize("sql,needle", [
-    ("DROP TABLE customers", "Only read-only"),
-    ("DELETE FROM customers", "Only read-only"),
-    ("INSERT INTO customers VALUES (1)", "Only read-only"),
-    ("UPDATE customers SET SEGMENT = 'x'", "Only read-only"),
-    ("CREATE TABLE x AS SELECT 1", "Only read-only"),
-    ("COPY customers TO '/tmp/x.csv'", "Only read-only"),
-    ("ATTACH 'x.db' AS y", "Only read-only"),
-    ("SELECT 1; SELECT 2", "Exactly one"),
-    ("SELECT * FROM read_csv('/etc/passwd')", "not allowed"),
-    ("SELECT * FROM read_parquet('x')", "not allowed"),
-    ("SELECT getenv('HOME')", "not allowed"),
-    ("SELECT * FROM main.customers", "qualified"),
-    ("SELECT * FROM secret_table", "Unknown dataset"),
-    ("SELECT 1 INTO t2", "not allowed"),
-    ("PRAGMA database_list", "Only read-only"),
-    ("SET memory_limit='100GB'", "Only read-only"),
-    ("INSTALL httpfs", "Only read-only"),
-    ("SELECT * FROM glob('/*')", "not allowed"),
-])
+@pytest.mark.parametrize(
+    "sql,needle",
+    [
+        ("DROP TABLE customers", "Only read-only"),
+        ("DELETE FROM customers", "Only read-only"),
+        ("INSERT INTO customers VALUES (1)", "Only read-only"),
+        ("UPDATE customers SET SEGMENT = 'x'", "Only read-only"),
+        ("CREATE TABLE x AS SELECT 1", "Only read-only"),
+        ("COPY customers TO '/tmp/x.csv'", "Only read-only"),
+        ("ATTACH 'x.db' AS y", "Only read-only"),
+        ("SELECT 1; SELECT 2", "Exactly one"),
+        ("SELECT * FROM read_csv('/etc/passwd')", "not allowed"),
+        ("SELECT * FROM read_parquet('x')", "not allowed"),
+        ("SELECT getenv('HOME')", "not allowed"),
+        ("SELECT * FROM main.customers", "qualified"),
+        ("SELECT * FROM secret_table", "Unknown dataset"),
+        ("SELECT 1 INTO t2", "not allowed"),
+        ("PRAGMA database_list", "Only read-only"),
+        ("SET memory_limit='100GB'", "Only read-only"),
+        ("INSTALL httpfs", "Only read-only"),
+        ("SELECT * FROM glob('/*')", "not allowed"),
+    ],
+)
 def test_sql_policy_blocks_unsafe_statements(sql, needle):
     errs, _, _ = validate_sql(sql, {"customers", "transactions"})
     assert errs and any(needle.lower() in e.message.lower() for e in errs), [e.message for e in errs]
@@ -80,20 +84,23 @@ def test_sql_unknown_column_runtime_error_with_line(inputs, tmp_path):
     assert errs and errs[0].kind == "RUNTIME" and errs[0].line == 2
 
 
-@pytest.mark.parametrize("code,needle", [
-    ("import os\ndef transform(sources): return os.listdir('/')", "Import of 'os'"),
-    ("import subprocess\ndef transform(s): pass", "Import of 'subprocess'"),
-    ("from socket import socket\ndef transform(s): pass", "Import of 'socket'"),
-    ("def transform(s):\n    return open('/etc/passwd').read()", "'open'"),
-    ("def transform(s):\n    return eval('1')", "'eval'"),
-    ("def transform(s):\n    return getattr(s, 'x')", "'getattr'"),
-    ("def transform(s):\n    return ().__class__.__bases__", "dunder"),
-    ("import pandas as pd\ndef transform(s):\n    return pd.read_csv('/etc/passwd')", "read_csv"),
-    ("def transform(s):\n    s['customers'].to_csv('/tmp/leak.csv')", "to_csv"),
-    ("def transform(s):\n    return __import__('os')", "__import__"),
-    ("def nothing(): pass", "must define"),
-    ("def transform(a, b): pass", "exactly one argument"),
-])
+@pytest.mark.parametrize(
+    "code,needle",
+    [
+        ("import os\ndef transform(sources): return os.listdir('/')", "Import of 'os'"),
+        ("import subprocess\ndef transform(s): pass", "Import of 'subprocess'"),
+        ("from socket import socket\ndef transform(s): pass", "Import of 'socket'"),
+        ("def transform(s):\n    return open('/etc/passwd').read()", "'open'"),
+        ("def transform(s):\n    return eval('1')", "'eval'"),
+        ("def transform(s):\n    return getattr(s, 'x')", "'getattr'"),
+        ("def transform(s):\n    return ().__class__.__bases__", "dunder"),
+        ("import pandas as pd\ndef transform(s):\n    return pd.read_csv('/etc/passwd')", "read_csv"),
+        ("def transform(s):\n    s['customers'].to_csv('/tmp/leak.csv')", "to_csv"),
+        ("def transform(s):\n    return __import__('os')", "__import__"),
+        ("def nothing(): pass", "must define"),
+        ("def transform(a, b): pass", "exactly one argument"),
+    ],
+)
 def test_python_policy(code, needle):
     errs, _ = validate_python(code)
     assert errs and any(needle.lower() in e.message.lower() for e in errs), [e.message for e in errs]
@@ -101,8 +108,10 @@ def test_python_policy(code, needle):
 
 def test_python_audit_hook_blocks_file_access_not_caught_by_ast(inputs, tmp_path):
     # pandas internals that open files are not in the AST denylist; the worker's audit hook must stop them
-    code = ("import pandas as pd\n\ndef transform(sources):\n"
-            "    h = pd.io.common.get_handle('/etc/hostname', 'r')\n    return sources['customers']\n")
+    code = (
+        "import pandas as pd\n\ndef transform(sources):\n"
+        "    h = pd.io.common.get_handle('/etc/hostname', 'r')\n    return sources['customers']\n"
+    )
     assert not validate_python(code)[0]
     errs, *_ = execute_python(code, inputs, tmp_path / "o.parquet")
     assert errs and "not permitted" in errs[0].message and errs[0].kind == "SAFETY"
@@ -128,17 +137,35 @@ def test_python_success_and_logs(inputs, tmp_path):
 
 
 SPEC = {
-    "sources": [{"alias": "customers", "as": "c"},
-                {"alias": "transactions", "as": "t", "filters": [{"column": "t.STATUS", "op": "=", "value": "COMPLETED"}]}],
+    "sources": [
+        {"alias": "customers", "as": "c"},
+        {"alias": "transactions", "as": "t", "filters": [{"column": "t.STATUS", "op": "=", "value": "COMPLETED"}]},
+    ],
     "joins": [{"right": "t", "type": "LEFT", "on": [{"left": "c.CUSTOMER_ID", "right": "t.CUSTOMER_ID"}]}],
     "columns": [
         {"target": "CUSTOMER_ID", "expr": {"col": "c.CUSTOMER_ID"}},
         {"target": "CUSTOMER_NAME", "expr": {"fn": "UPPER", "args": [{"fn": "TRIM", "args": [{"col": "c.CUSTOMER_NAME"}]}]}},
-        {"target": "NET_AMOUNT", "expr": {"fn": "COALESCE", "args": [{"fn": "ROUND", "args": [
-            {"fn": "SUM", "args": [{"op": "-", "args": [{"col": "t.AMOUNT"}, {"col": "t.DISCOUNT"}]}]}, {"lit": 2}]}, {"lit": 0}]}},
+        {
+            "target": "NET_AMOUNT",
+            "expr": {
+                "fn": "COALESCE",
+                "args": [
+                    {
+                        "fn": "ROUND",
+                        "args": [{"fn": "SUM", "args": [{"op": "-", "args": [{"col": "t.AMOUNT"}, {"col": "t.DISCOUNT"}]}]}, {"lit": 2}],
+                    },
+                    {"lit": 0},
+                ],
+            },
+        },
         {"target": "TXN_COUNT", "expr": {"fn": "COUNT", "args": [{"col": "t.TXN_ID"}]}},
-        {"target": "TIER", "expr": {"case": [{"when": {"column": "c.SEGMENT", "op": "=", "value": "CORPORATE"}, "then": {"lit": "GOLD"}}],
-                                     "else": {"lit": "STD"}}},
+        {
+            "target": "TIER",
+            "expr": {
+                "case": [{"when": {"column": "c.SEGMENT", "op": "=", "value": "CORPORATE"}, "then": {"lit": "GOLD"}}],
+                "else": {"lit": "STD"},
+            },
+        },
     ],
 }
 
@@ -151,9 +178,19 @@ def test_visual_sql_python_equivalence(inputs, tmp_path):
     vis = TransformationDefinition("t", "r", "VISUAL", inputs, visual_spec=SPEC)
     sql = TransformationDefinition("t", "r", "SQL", inputs, code=compile_visual(SPEC))
     spec_no_case = {**SPEC, "columns": SPEC["columns"][:4]}
-    py = TransformationDefinition("t", "r", "PYTHON", inputs, code=compile_visual_to_pandas(spec_no_case, {
-        "customers": ["CUSTOMER_ID", "CUSTOMER_NAME", "SEGMENT", "EMAIL"],
-        "transactions": ["TXN_ID", "CUSTOMER_ID", "AMOUNT", "DISCOUNT", "STATUS", "TXN_DATE"]}))
+    py = TransformationDefinition(
+        "t",
+        "r",
+        "PYTHON",
+        inputs,
+        code=compile_visual_to_pandas(
+            spec_no_case,
+            {
+                "customers": ["CUSTOMER_ID", "CUSTOMER_NAME", "SEGMENT", "EMAIL"],
+                "transactions": ["TXN_ID", "CUSTOMER_ID", "AMOUNT", "DISCOUNT", "STATUS", "TXN_DATE"],
+            },
+        ),
+    )
     a = execute(vis, tmp_path / "a.parquet")
     b = execute(sql, tmp_path / "b.parquet")
     c = execute(py, tmp_path / "c.parquet")
@@ -180,10 +217,12 @@ def test_visual_rejects_unsafe_or_malformed_specs():
 
 
 def test_visual_dedupe_and_post_filter(inputs, tmp_path):
-    spec = {"sources": [{"alias": "transactions", "as": "t"}],
-            "columns": [{"target": "CUSTOMER_ID", "expr": {"col": "t.CUSTOMER_ID"}}, {"target": "AMOUNT", "expr": {"col": "t.AMOUNT"}}],
-            "dedupe": {"keys": ["CUSTOMER_ID"], "order_by": [{"column": "AMOUNT", "desc": True}]},
-            "post_filters": [{"column": "AMOUNT", "op": ">", "value": 100}]}
+    spec = {
+        "sources": [{"alias": "transactions", "as": "t"}],
+        "columns": [{"target": "CUSTOMER_ID", "expr": {"col": "t.CUSTOMER_ID"}}, {"target": "AMOUNT", "expr": {"col": "t.AMOUNT"}}],
+        "dedupe": {"keys": ["CUSTOMER_ID"], "order_by": [{"column": "AMOUNT", "desc": True}]},
+        "post_filters": [{"column": "AMOUNT", "op": ">", "value": 100}],
+    }
     r = execute(TransformationDefinition("t", "r", "VISUAL", inputs, visual_spec=spec), tmp_path / "o.parquet")
     assert r.status == "SUCCESS"
     rows = pq.read_table(tmp_path / "o.parquet").to_pylist()

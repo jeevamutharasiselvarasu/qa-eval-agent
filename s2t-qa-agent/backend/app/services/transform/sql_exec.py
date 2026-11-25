@@ -7,6 +7,7 @@ Layers of defence:
   4. Runtime: fresh in-memory DuckDB, inputs loaded as tables, then external access disabled and the
      configuration locked; memory/thread limits; wall-clock timeout via interrupt().
 """
+
 from __future__ import annotations
 
 import re
@@ -23,13 +24,66 @@ from sqlglot.errors import ParseError
 from ...config import get_settings
 from .contract import ExecError
 
-FORBIDDEN_NODES = {"Insert", "Update", "Delete", "Drop", "Create", "Alter", "Command", "Copy", "Pragma", "Set",
-                   "Use", "Transaction", "Commit", "Rollback", "Attach", "Detach", "Merge", "Into", "LoadData",
-                   "Install", "Export", "Grant", "Revoke", "Analyze", "Describe", "Summarize", "Kill", "Refresh"}
-FORBIDDEN_FUNC_PREFIXES = ("read_", "glob", "getenv", "current_setting", "duckdb_", "pragma_", "sniff_", "parquet_",
-                           "query", "load_", "write_", "httpfs", "sqlite_", "postgres_", "mysql_", "iceberg_", "delta_",
-                           "json_execute", "system", "copy_", "checkpoint", "enable_", "disable_", "which_secret",
-                           "list_files", "file_", "import_", "export_")
+FORBIDDEN_NODES = {
+    "Insert",
+    "Update",
+    "Delete",
+    "Drop",
+    "Create",
+    "Alter",
+    "Command",
+    "Copy",
+    "Pragma",
+    "Set",
+    "Use",
+    "Transaction",
+    "Commit",
+    "Rollback",
+    "Attach",
+    "Detach",
+    "Merge",
+    "Into",
+    "LoadData",
+    "Install",
+    "Export",
+    "Grant",
+    "Revoke",
+    "Analyze",
+    "Describe",
+    "Summarize",
+    "Kill",
+    "Refresh",
+}
+FORBIDDEN_FUNC_PREFIXES = (
+    "read_",
+    "glob",
+    "getenv",
+    "current_setting",
+    "duckdb_",
+    "pragma_",
+    "sniff_",
+    "parquet_",
+    "query",
+    "load_",
+    "write_",
+    "httpfs",
+    "sqlite_",
+    "postgres_",
+    "mysql_",
+    "iceberg_",
+    "delta_",
+    "json_execute",
+    "system",
+    "copy_",
+    "checkpoint",
+    "enable_",
+    "disable_",
+    "which_secret",
+    "list_files",
+    "file_",
+    "import_",
+    "export_",
+)
 ALIAS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
@@ -61,7 +115,11 @@ def validate_sql(sql: str, allowed_tables: set[str]) -> tuple[list[ExecError], l
         return [ExecError(f"Exactly one SELECT statement is allowed (found {len(stmts)})", kind="SAFETY")], warnings, refs
     root = stmts[0]
     if not isinstance(root, (exp.Select, exp.SetOperation, exp.Subquery)):
-        return [ExecError(f"Only read-only SELECT queries are allowed (found {type(root).__name__.upper()})", kind="SAFETY")], warnings, refs
+        return (
+            [ExecError(f"Only read-only SELECT queries are allowed (found {type(root).__name__.upper()})", kind="SAFETY")],
+            warnings,
+            refs,
+        )
     cte_names = {c.alias_or_name.lower() for c in root.find_all(exp.CTE)}
     allowed_lower = {t.lower() for t in allowed_tables}
     for node in root.walk():
@@ -80,8 +138,9 @@ def validate_sql(sql: str, allowed_tables: set[str]) -> tuple[list[ExecError], l
             if tname in cte_names:
                 continue
             if tname not in allowed_lower:
-                errors.append(ExecError(f"Unknown dataset '{node.name}'. Available: {', '.join(sorted(allowed_tables)) or 'none'}",
-                                        kind="SAFETY"))
+                errors.append(
+                    ExecError(f"Unknown dataset '{node.name}'. Available: {', '.join(sorted(allowed_tables)) or 'none'}", kind="SAFETY")
+                )
             else:
                 refs.add(tname)
         elif isinstance(node, exp.Func):
@@ -98,8 +157,12 @@ def validate_sql(sql: str, allowed_tables: set[str]) -> tuple[list[ExecError], l
                     if tok and tok in line.lower():
                         e.line = i
                         break
-    if isinstance(root, exp.Select) and not root.args.get("group") and any(
-        isinstance(s.unalias(), exp.AggFunc) for s in root.expressions) and len(root.expressions) > 1:
+    if (
+        isinstance(root, exp.Select)
+        and not root.args.get("group")
+        and any(isinstance(s.unalias(), exp.AggFunc) for s in root.expressions)
+        and len(root.expressions) > 1
+    ):
         warnings.append("Aggregate functions without GROUP BY: check that all non-aggregated columns are grouped.")
     if "*" in [s.sql() for s in getattr(root, "expressions", [])]:
         warnings.append("SELECT * output depends on input schemas; prefer explicit target columns.")
@@ -116,8 +179,9 @@ def _parse_duckdb_error(msg: str) -> ExecError:
     return ExecError(first[:1000], line, None, kind)
 
 
-def execute_sql(sql: str, inputs: dict[str, Path], output_path: Path, *, limit: int | None = None,
-                timeout_s: int | None = None) -> tuple[list[ExecError], list[str], int, list[dict]]:
+def execute_sql(
+    sql: str, inputs: dict[str, Path], output_path: Path, *, limit: int | None = None, timeout_s: int | None = None
+) -> tuple[list[ExecError], list[str], int, list[dict]]:
     """Run validated SQL against the given parquet inputs; stream output to parquet.
     Returns (errors, logs, row_count, schema)."""
     s = get_settings()
@@ -161,7 +225,7 @@ def execute_sql(sql: str, inputs: dict[str, Path], output_path: Path, *, limit: 
             writer.close()
         logs.append(f"Query returned {rows} rows in {int((time.perf_counter() - t0) * 1000)} ms")
         schema = [{"name": f.name, "type": str(f.type)} for f in schema_obj]
-        if len({c['name'].lower() for c in schema}) != len(schema):
+        if len({c["name"].lower() for c in schema}) != len(schema):
             return [ExecError("Output has duplicate column names", kind="CONTRACT")], logs, 0, []
         return [], logs, rows, schema
     except duckdb.Error as e:

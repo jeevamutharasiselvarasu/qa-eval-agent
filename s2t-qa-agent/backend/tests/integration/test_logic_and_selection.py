@@ -1,4 +1,5 @@
 """Test cases derived from the transformation logic, and running only the selected test cases."""
+
 import time
 
 from conftest import complete_requirements, wait_exec
@@ -33,7 +34,7 @@ def test_sql_analysis_finds_the_properties_the_logic_guarantees():
     assert p["TIER"]["ALLOWED_VALUES"] == ["GOLD", "SILVER"] and p["TIER"]["_ALLOW_NULL"]
     assert p["CODE"]["MAX_LENGTH"] == 3 and p["DELTA"]["NON_NEGATIVE"]
     assert lg.base[0] == "cust" and lg.joins[0]["type"] == "INNER" and lg.joins[0]["table"] == "txn"
-    assert lg.joins[0]["conds"] == ['"t"."STATUS" = \'OK\'' ] or "STATUS" in lg.joins[0]["conds"][0]
+    assert lg.joins[0]["conds"] == ['"t"."STATUS" = \'OK\''] or "STATUS" in lg.joins[0]["conds"][0]
     assert lg.group == ["ID", "NAME", "TIER", "CODE", "DELTA"]
 
 
@@ -52,7 +53,7 @@ def test_logic_tests_are_generated_from_the_sql_and_catch_target_defects(client)
     _approve(client, rid)
     client.put(f"/api/runs/{rid}/test-cases/selection", json={"only": [t["id"] for t in tl.values()]})
     ex = client.post(f"/api/runs/{rid}/run-validation", json={}).json()
-    assert [e["track"] for e in ex] == ["ACTUAL"]  # no synthetic test was selected
+    assert [e["track"] for e in ex] == ["ACTUAL"]
     res = {r["test_case_id"]: r for r in wait_exec(client, ex[0]["id"])["results"]}
     assert set(res) == {t["id"] for t in tl.values()}
     upper = tl["CUSTOMER_NAME is upper-case in the uploaded target"]["id"]
@@ -77,16 +78,17 @@ GROUP BY ALL"""
     client.put(f"/api/runs/{rid}/test-cases/selection", json={"only": [seg["id"], inner["id"]]})
     ex = client.post(f"/api/runs/{rid}/run-validation", json={}).json()
     res = {r["test_case_id"]: r for r in wait_exec(client, ex[0]["id"])["results"]}
-    assert res[seg["id"]]["status"] == "FAIL"     # the uploaded target holds the original segment names
-    assert res[inner["id"]]["status"] == "FAIL"   # C108-like customers without transactions are in the target
+    assert res[seg["id"]]["status"] == "FAIL"  # the uploaded target holds the original segment names
+    assert res[inner["id"]]["status"] == "FAIL"  # C108-like customers without transactions are in the target
 
 
 def test_only_selected_tests_run_and_the_report_says_so(client):
     rid = _ready(client)
     _approve(client, rid)
     tcs = client.get(f"/api/runs/{rid}/test-cases").json()["test_cases"]
-    pick = [t["id"] for t in tcs if t["track"] == "SYNTHETIC" and t["state"] == "READY"][:3] + \
-           [t["id"] for t in tcs if t["track"] == "ACTUAL" and t["state"] == "READY"][:2]
+    pick = [t["id"] for t in tcs if t["validation"].get("scope") and t["state"] == "READY"][:3] + [
+        t["id"] for t in tcs if not t["validation"].get("scope") and t["state"] == "READY"
+    ][:2]
     r = client.put(f"/api/runs/{rid}/test-cases/selection", json={"only": []})
     assert r.json()["selected"] == []
     assert client.post(f"/api/runs/{rid}/run-validation", json={}).status_code == 400

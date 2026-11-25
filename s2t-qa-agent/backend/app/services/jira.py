@@ -4,6 +4,7 @@ Two adapters:
   * MockJiraConnector  - reads clearly labelled fixtures from backend/fixtures/jira/<KEY>.json
   * JiraCloudConnector - Jira Cloud REST API v3 (basic auth: email + API token from env)
 """
+
 from __future__ import annotations
 
 import base64
@@ -92,21 +93,40 @@ class MockJiraConnector:
         key = validate_key(key)
         path = self.fixture_dir / f"{key}.json"
         if not path.exists():
-            raise JiraError("NOT_FOUND", f"Issue {key} not found (mock fixtures available: "
-                                         f"{', '.join(sorted(p.stem for p in self.fixture_dir.glob('*.json')))})")
+            raise JiraError(
+                "NOT_FOUND",
+                f"Issue {key} not found (mock fixtures available: {', '.join(sorted(p.stem for p in self.fixture_dir.glob('*.json')))})",
+            )
         raw = json.loads(path.read_text())
         if raw.get("_simulate_error"):
             raise JiraError(raw["_simulate_error"], f"Simulated Jira error {raw['_simulate_error']}")
         atts = []
         for a in raw.get("attachments", []):
-            atts.append({"id": a["id"], "filename": a["filename"], "mime": a.get("mime", "text/plain"),
-                         "size": len(a.get("content", "")), "content": a.get("content"), "skipped_reason": None})
+            atts.append(
+                {
+                    "id": a["id"],
+                    "filename": a["filename"],
+                    "mime": a.get("mime", "text/plain"),
+                    "size": len(a.get("content", "")),
+                    "content": a.get("content"),
+                    "skipped_reason": None,
+                }
+            )
         return JiraDocument(
-            key=key, id=str(raw.get("id", key)), source="MOCK", summary=raw.get("summary", ""),
-            description=raw.get("description", ""), issue_type=raw.get("issue_type", ""),
-            status=raw.get("status", ""), labels=raw.get("labels", []), components=raw.get("components", []),
-            project=raw.get("project", {}), custom_fields=raw.get("custom_fields", {}),
-            comments=raw.get("comments", []), attachments=atts, links=raw.get("links", []),
+            key=key,
+            id=str(raw.get("id", key)),
+            source="MOCK",
+            summary=raw.get("summary", ""),
+            description=raw.get("description", ""),
+            issue_type=raw.get("issue_type", ""),
+            status=raw.get("status", ""),
+            labels=raw.get("labels", []),
+            components=raw.get("components", []),
+            project=raw.get("project", {}),
+            custom_fields=raw.get("custom_fields", {}),
+            comments=raw.get("comments", []),
+            attachments=atts,
+            links=raw.get("links", []),
         )
 
 
@@ -114,6 +134,7 @@ class JiraCloudConnector:
     def __init__(self, config: dict | None = None, client: httpx.Client | None = None):
         if config is None:
             from .settings_svc import get_jira_config
+
             config = get_jira_config()
         base, email, token = config.get("base_url", ""), config.get("email", ""), config.get("api_token", "")
         if not (base and email and token):
@@ -137,8 +158,12 @@ class JiraCloudConnector:
             info = self._get("/rest/api/3/serverInfo").json()
         except JiraError:
             info = {}
-        return {"display_name": me.get("displayName", ""), "active": me.get("active", True),
-                "deployment": info.get("deploymentType", ""), "site": info.get("baseUrl", self.base)}
+        return {
+            "display_name": me.get("displayName", ""),
+            "active": me.get("active", True),
+            "deployment": info.get("deploymentType", ""),
+            "site": info.get("baseUrl", self.base),
+        }
 
     def _get(self, path: str, **params) -> httpx.Response:
         try:
@@ -177,12 +202,24 @@ class JiraCloudConnector:
         comments = []
         cdata = self._get(f"/rest/api/3/issue/{key}/comment", maxResults=100).json()
         for c in cdata.get("comments", []):
-            comments.append({"id": c["id"], "author": (c.get("author") or {}).get("displayName", ""),
-                             "created": c.get("created", ""), "body": adf_to_text(c.get("body"))})
+            comments.append(
+                {
+                    "id": c["id"],
+                    "author": (c.get("author") or {}).get("displayName", ""),
+                    "created": c.get("created", ""),
+                    "body": adf_to_text(c.get("body")),
+                }
+            )
         atts = []
         for a in f.get("attachment", []) or []:
-            item = {"id": a["id"], "filename": a["filename"], "mime": a.get("mimeType", ""),
-                    "size": a.get("size", 0), "content": None, "skipped_reason": None}
+            item = {
+                "id": a["id"],
+                "filename": a["filename"],
+                "mime": a.get("mimeType", ""),
+                "size": a.get("size", 0),
+                "content": None,
+                "skipped_reason": None,
+            }
             ext = Path(a["filename"]).suffix.lower()
             if ext not in TEXT_ATTACHMENT_TYPES:
                 item["skipped_reason"] = f"Unsupported attachment type {ext} (text-based types only in Phase 1)"
@@ -193,22 +230,36 @@ class JiraCloudConnector:
                 item["content"] = r.content.decode("utf-8", errors="replace")
             atts.append(item)
         links = []
-        for l in f.get("issuelinks", []) or []:
-            other = l.get("outwardIssue") or l.get("inwardIssue") or {}
-            links.append({"type": (l.get("type") or {}).get("name", ""), "key": other.get("key", ""),
-                          "summary": (other.get("fields") or {}).get("summary", "")})
+        for link in f.get("issuelinks", []) or []:
+            other = link.get("outwardIssue") or link.get("inwardIssue") or {}
+            links.append(
+                {
+                    "type": (link.get("type") or {}).get("name", ""),
+                    "key": other.get("key", ""),
+                    "summary": (other.get("fields") or {}).get("summary", ""),
+                }
+            )
         return JiraDocument(
-            key=data.get("key", key), id=str(data.get("id", "")), source="LIVE",
-            summary=f.get("summary", ""), description=adf_to_text(f.get("description")),
-            issue_type=(f.get("issuetype") or {}).get("name", ""), status=(f.get("status") or {}).get("name", ""),
-            labels=f.get("labels", []) or [], components=[c.get("name", "") for c in f.get("components", []) or []],
+            key=data.get("key", key),
+            id=str(data.get("id", "")),
+            source="LIVE",
+            summary=f.get("summary", ""),
+            description=adf_to_text(f.get("description")),
+            issue_type=(f.get("issuetype") or {}).get("name", ""),
+            status=(f.get("status") or {}).get("name", ""),
+            labels=f.get("labels", []) or [],
+            components=[c.get("name", "") for c in f.get("components", []) or []],
             project={"key": (f.get("project") or {}).get("key", ""), "name": (f.get("project") or {}).get("name", "")},
-            custom_fields=custom, comments=comments, attachments=atts, links=links,
+            custom_fields=custom,
+            comments=comments,
+            attachments=atts,
+            links=links,
         )
 
 
 def get_connector():
     from .settings_svc import get_jira_config
+
     cfg = get_jira_config()
     if cfg["mode"] == "cloud":
         return JiraCloudConnector(cfg)

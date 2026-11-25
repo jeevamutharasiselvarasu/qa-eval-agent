@@ -1,0 +1,144 @@
+{#- QA validation report. Context is prepared by app/services/report_render.py (autoescape is on). -#}
+{%- macro pill(status, label=None) -%}
+<span class="pill" style="color:{{ color[status] | default(color.SKIPPED) }};background:{{ bg[status] | default(bg.SKIPPED) }}">{{ label or status_label.get(status, status | replace('_', ' ') | title) }}</span>
+{%- endmacro -%}
+{%- macro table(rows, cols, empty='None.', cls='') -%}
+{%- if not rows -%}<p class="muted">{{ empty }}</p>
+{%- else -%}
+<div class="tw"><table class="{{ cls }}">
+  <thead><tr>{% for key, label in cols %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+  <tbody>
+  {%- for r in rows %}
+    <tr>{% for key, label in cols %}
+      {%- set v = r.get(key) -%}
+      {%- if key == 'status' -%}<td>{{ pill(v) }}</td>
+      {%- elif key == 'coverage' -%}<td>{{ pill(coverage[v][0] if v in coverage else 'SKIPPED', coverage[v][1] if v in coverage else v) }}</td>
+      {%- else -%}<td class="{{ key }}">{{ '' if v is none else v }}</td>{%- endif -%}
+    {% endfor %}</tr>
+  {%- endfor %}
+  </tbody>
+</table></div>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro h2(key, text) -%}<h2 id="{{ key }}"><span class="n">{{ section_no[key] }}</span>{{ text }}</h2>{%- endmacro -%}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>QA validation report · {{ s.jira_ticket }}</title>
+  <style>{{ css | safe }}</style>
+</head>
+<body>
+<button class="print-btn" onclick="window.print()">Print / save as PDF</button>
+<main class="page">
+  <header class="cover">
+    <div>
+      <div class="brand">{{ logo | safe }} S2T QA Agent</div>
+      <h1>QA validation report</h1>
+      <p class="sub">{{ s.run_name }}</p>
+    </div>
+    <dl class="meta">
+      <dt>Jira ticket</dt><dd>{{ s.jira_ticket }}</dd>
+      <dt>Run</dt><dd>{{ s.qa_run_id }}</dd>
+      <dt>Generated</dt><dd>{{ generated }}</dd>
+      <dt>SQL version</dt><dd>{{ sql_version }}</dd>
+      <dt>Source files</dt><dd>{{ sources }}</dd>
+      <dt>Target file</dt><dd>{{ target }}</dd>
+    </dl>
+  </header>
+
+  <section class="verdict" style="background:{{ bg[verdict.status] }};color:{{ color[verdict.status] }}">
+    <div>
+      <div class="big">{{ verdict.title }}</div>
+      <p>{{ verdict.explanation }} {{ c.FAIL | default(0) }} of {{ total }} tests failed · pass rate {{ pass_rate }} of the evaluated tests.</p>
+    </div>
+  </section>
+
+  <div class="kpis">
+    {%- for k in kpis %}
+    <div class="kpi"><div class="n" style="color:{{ color.get(k.status, 'inherit') }}">{{ k.value }}</div><div class="l">{{ k.label }}</div></div>
+    {%- endfor %}
+  </div>
+  <svg class="bar" viewBox="0 0 100 14" preserveAspectRatio="none" role="img" aria-label="Result distribution">
+    {%- for seg in bar %}<rect x="{{ seg.x }}%" width="{{ seg.w }}%" height="14" fill="{{ seg.color }}"><title>{{ seg.label }}: {{ seg.n }}</title></rect>{% endfor -%}
+  </svg>
+  <div class="legend">{% for seg in bar %}<span><i style="background:{{ seg.color }}"></i>{{ seg.label }} {{ seg.n }}</span>{% endfor %}</div>
+  <p class="note">{{ selection.selected }} of {{ selection.in_pack }} test cases in the approved test pack were selected for this run.
+    "Not in data" means the uploaded data has no record with that edge case, so the test could not apply; it does not lower the result.</p>
+
+  <nav class="toc"><b>Contents</b><ol>{% for key, title in sections %}<li><a href="#{{ key }}">{{ title }}</a></li>{% endfor %}</ol></nav>
+
+  {{ h2('summary', 'Summary') }}
+  <p class="lead">The uploaded target ({{ target }}) was compared with the expected target that the approved SQL builds from the uploaded
+    sources. {{ failures | length }} test(s) failed or errored; {{ blocked_count }} could not be evaluated because a requirement question is unanswered.</p>
+  {{ table(s.open_gaps, [('id', 'Open question'), ('status', 'Status'), ('description', 'Description')], 'No open requirement questions.') }}
+
+  {{ h2('criteria', 'Acceptance criteria') }}
+  <p class="lead">Result per Jira acceptance criterion. A criterion passes when every test that applies to the uploaded data passes.</p>
+  {{ table(ac_rows, [('ac', 'AC'), ('text', 'Criterion'), ('tests', 'Tests'), ('PASS', 'Passed'), ('FAIL', 'Failed'), ('BLOCKED', 'Blocked'),
+                     ('SKIPPED', 'Not in data'), ('coverage', 'Result')], 'No acceptance criteria.', 'num') }}
+
+  {{ h2('findings', 'Findings') }}
+  <p class="lead">Each failed test, with what was expected and what the uploaded target contains.</p>
+  {%- for r in failures %}
+  <div class="finding" style="border-left-color:{{ color[r.status] }}">
+    <h4><span class="id">{{ r.test_case_id }}</span>{{ r.title }}</h4>
+    <dl>
+      <dt>Result</dt><dd>{{ pill(r.status) }} {{ r.message }}</dd>
+      <dt>Expected</dt><dd>{{ r.expected }}</dd>
+      <dt>Found</dt><dd>{{ r.actual }}</dd>
+      {%- if r.scope %}<dt>Records checked</dt><dd>Only records with {{ r.scope }}</dd>{% endif %}
+      {%- if r.acceptance_criteria %}<dt>Acceptance criterion</dt><dd>{{ r.acceptance_criteria }}</dd>{% endif %}
+    </dl>
+  </div>
+  {%- else %}
+  <p class="muted">No failed tests.</p>
+  {%- endfor %}
+
+  {{ h2('reconciliation', 'Reconciliation') }}
+  {{ table(reconciliation, [('measure', 'Measure'), ('value', 'Value')], 'Reconciliation tests were not selected for this run.', 'num') }}
+
+  {{ h2('differences', 'Column differences') }}
+  <p class="lead">Record-level differences between the expected and the uploaded target (sample).</p>
+  {{ table(data.column_differences, [('test_case_id', 'Test'), ('business_key', 'Business key'), ('column', 'Column'), ('expected', 'Expected'),
+                                     ('actual', 'Uploaded target'), ('difference', 'Difference')], 'No column differences.') }}
+
+  {{ h2('analysis', 'Failure analysis') }}
+  <p class="lead">AI-assisted explanations of the failures. Advisory only: the confirmed facts come from the deterministic checks.</p>
+  {%- for f in data.failure_analysis %}
+  <details>
+    <summary>{{ f.test_case_id }} · {{ f.category }} (suspected: {{ (f.suspected_layer or '') | replace('_', ' ') | lower }})</summary>
+    <div class="advisory">
+      <b>Confirmed facts</b><ul>{% for x in f.confirmed_facts or [] %}<li>{{ x }}</li>{% endfor %}</ul>
+      <b>Likely explanations</b><ul>{% for x in f.likely_explanations or [] %}<li>{{ x }}</li>{% else %}<li>None</li>{% endfor %}</ul>
+      <b>Recommended checks</b><ul>{% for x in f.recommended_checks or [] %}<li>{{ x }}</li>{% else %}<li>None</li>{% endfor %}</ul>
+      <span class="muted">Advisory only (provider: {{ f.provider }}); it cannot change the test result.</span>
+    </div>
+  </details>
+  {%- else %}
+  <p class="muted">No failures to analyse.</p>
+  {%- endfor %}
+
+  <section class="appendix">
+    {{ h2('results', 'All test results') }}
+    {{ table(results, [('test_case_id', 'Test'), ('basis', 'From'), ('test_type', 'Type'), ('title', 'Test case'), ('scope', 'Records checked'),
+                       ('status', 'Result'), ('message', 'Details')]) }}
+
+    {{ h2('logic', 'Transformation') }}
+    <p class="lead">How each target column is built, and the approved SQL the expected target was produced with.</p>
+    {{ table(column_rules, [('target_column', 'Target column'), ('source_columns', 'Source columns'), ('rule', 'Rule'), ('provenance', 'From')]) }}
+    {%- if tr %}
+    <p class="muted">SQL v{{ tr.version }} · {{ (tr.origin or '') | replace('_', ' ') | lower }} · approval {{ (tr.approval or '') | lower }} · hash {{ (tr.content_hash or '')[:19] }}</p>
+    <pre>{{ tr.code }}</pre>
+    {%- endif %}
+
+    {{ h2('audit', 'Approvals and audit') }}
+    {{ table(data.audit.approvals, [('artifact_type', 'Item'), ('version', 'Version'), ('decision', 'Decision'), ('reviewer', 'Reviewer'),
+                                   ('at', 'When'), ('reason', 'Reason')], 'No approvals recorded.') }}
+  </section>
+
+  <footer><span>S2T QA Agent · run {{ s.qa_run_id }} · executions {{ s.generated_for_executions | join(', ') }}</span><span>Generated {{ generated }}</span></footer>
+</main>
+</body>
+</html>

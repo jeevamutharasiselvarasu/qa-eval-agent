@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import CodeMirror from '@uiw/react-codemirror'
 import { sql as sqlLang, StandardSQL } from '@codemirror/lang-sql'
@@ -6,8 +6,9 @@ import { python } from '@codemirror/lang-python'
 import { Sparkles, BookOpen, Wrench, ShieldCheck, Save, Play, CheckCircle2, XCircle, History, Database, RotateCcw, Eye } from 'lucide-react'
 import { api } from '../../api.js'
 import { useRun } from '../RunWorkspace.jsx'
-import { Alert, Badge, Btn, Card, DataTable, Empty, Modal, fmtDate, useAction, useLoad } from '../../components/ui.jsx'
+import { Alert, Badge, Btn, Card, DataTable, Empty, Loading, Modal, fmtDate, useAction, useLoad } from '../../components/ui.jsx'
 import VisualBuilder from './VisualBuilder.jsx'
+import StepNav from './StepNav.jsx'
 
 const pyTemplate = (aliases) => `import pandas as pd
 
@@ -33,7 +34,7 @@ function Diff({ a, b }) {
 }
 
 export default function TransformationStudio() {
-  const { runId, run, reload: reloadRun, meta } = useRun()
+  const { runId, reload: reloadRun, meta } = useRun()
   const [tr, reload] = useLoad(() => api.get(`/runs/${runId}/transformations`), [runId])
   const [spec, reloadSpec] = useLoad(() => api.get(`/runs/${runId}/target-spec`), [runId])
   const [schema] = useLoad(() => api.get(`/runs/${runId}/transformations/schema`), [runId])
@@ -99,15 +100,20 @@ export default function TransformationStudio() {
   const decide = (decision) => {
     const reason = decision === 'REJECTED' ? window.prompt('Reason for rejection?') : ''
     if (decision === 'REJECTED' && !reason) return
-    act('apr', async () => { await api.post(`/runs/${runId}/transformations/${cur.id}/approve`, { decision, reason }); refresh() }, `Version ${decision.toLowerCase()}`)
+    act('apr', async () => { await api.post(`/runs/${runId}/transformations/${cur.id}/approve`, { decision, reason }); refresh() },
+      decision === 'APPROVED' ? `SQL v${cur.version} approved. Next: choose and run the test cases` : `Version ${decision.toLowerCase()}`)
   }
   const insert = (text) => mode !== 'VISUAL' && setDrafts(d => ({ ...d, [mode]: d[mode] + text }))
 
-  if (!tr || !schema) return <div className="muted">Loading…</div>
+  if (!tr || !schema) return <Loading rows={6} />
   const apr = tr.approval
   const sqlState = spec?.sql?.state
   return (
     <div className="col">
+      <StepNav step="studio">
+        {cur && apr.status !== 'APPROVED' && <Btn className="primary" icon={CheckCircle2} busy={busy === 'apr'} disabled={!draftEqualsCurrent || !cur.validation?.valid}
+          title={!draftEqualsCurrent ? 'Save or discard your unsaved edits first' : ''} onClick={() => decide('APPROVED')}>Approve SQL v{cur.version}</Btn>}
+      </StepNav>
       {spec && !spec.ready && <Alert kind="warn"><b>The requirements are not complete ({spec.open_items.length} item(s)).</b> The SQL is generated
         from the requirements: complete them on the {reqLink} tab and it is created here automatically.{cur ? ' The version below is kept until then.' : ''}</Alert>}
       {spec?.ready && sqlState === 'CURRENT' && cur?.requirements_basis && <Alert kind="ok">This SQL was generated from the {reqLink}. To change it, edit the requirements (preferred) or edit the code here.</Alert>}

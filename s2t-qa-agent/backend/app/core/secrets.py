@@ -4,6 +4,7 @@ Key source, in order: QA_SECRET_KEY (a Fernet key) or a key file created on firs
 <QA_STORAGE_DIR>/.secret.key with owner-only permissions. Losing the key file means stored secrets must be re-entered.
 Secrets are decrypted only inside the backend and are never returned by the API.
 """
+
 from __future__ import annotations
 
 import os

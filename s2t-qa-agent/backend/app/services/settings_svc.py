@@ -1,4 +1,5 @@
 """Settings stored in the app database (Settings page), with .env values as the fallback."""
+
 from __future__ import annotations
 
 import ipaddress
@@ -18,23 +19,40 @@ JIRA_KEY = "jira"
 
 def _env_jira() -> dict:
     s = get_settings()
-    return {"mode": s.jira_mode if s.jira_mode in ("mock", "cloud") else "mock", "base_url": s.jira_base_url,
-            "email": s.jira_email, "api_token": s.jira_api_token, "ac_custom_fields": s.jira_ac_custom_fields,
-            "timeout_s": s.jira_timeout_s, "source": "env", "updated_by": None, "updated_at": None}
+    return {
+        "mode": s.jira_mode if s.jira_mode in ("mock", "cloud") else "mock",
+        "base_url": s.jira_base_url,
+        "email": s.jira_email,
+        "api_token": s.jira_api_token,
+        "ac_custom_fields": s.jira_ac_custom_fields,
+        "timeout_s": s.jira_timeout_s,
+        "source": "env",
+        "updated_by": None,
+        "updated_at": None,
+    }
 
 
 def get_jira_config(db: Session | None = None) -> dict:
     """Effective Jira configuration (includes the decrypted token; never return this dict to clients)."""
+
     def read(d: Session) -> dict:
         row = d.get(AppSetting, JIRA_KEY)
         if not row:
             return _env_jira()
         v = row.value or {}
-        return {"mode": v.get("mode", "mock"), "base_url": v.get("base_url", ""), "email": v.get("email", ""),
-                "api_token": decrypt(row.secret_enc) if row.secret_enc else "", "ac_custom_fields": v.get("ac_custom_fields", []),
-                "timeout_s": v.get("timeout_s") or get_settings().jira_timeout_s, "source": "settings",
-                "updated_by": row.updated_by, "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-                "token_unreadable": bool(row.secret_enc) and decrypt(row.secret_enc) is None}
+        return {
+            "mode": v.get("mode", "mock"),
+            "base_url": v.get("base_url", ""),
+            "email": v.get("email", ""),
+            "api_token": decrypt(row.secret_enc) if row.secret_enc else "",
+            "ac_custom_fields": v.get("ac_custom_fields", []),
+            "timeout_s": v.get("timeout_s") or get_settings().jira_timeout_s,
+            "source": "settings",
+            "updated_by": row.updated_by,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "token_unreadable": bool(row.secret_enc) and decrypt(row.secret_enc) is None,
+        }
+
     if db is not None:
         return read(db)
     with session_scope() as d:
@@ -102,12 +120,27 @@ def merged_jira(db: Session, data: dict) -> dict:
 def save_jira(db: Session, data: dict, actor: str) -> dict:
     new = merged_jira(db, data)
     row = db.get(AppSetting, JIRA_KEY) or AppSetting(key=JIRA_KEY)
-    row.value = {"mode": new["mode"], "base_url": new["base_url"], "email": new["email"],
-                 "ac_custom_fields": new["ac_custom_fields"], "timeout_s": new.get("timeout_s")}
+    row.value = {
+        "mode": new["mode"],
+        "base_url": new["base_url"],
+        "email": new["email"],
+        "ac_custom_fields": new["ac_custom_fields"],
+        "timeout_s": new.get("timeout_s"),
+    }
     row.secret_enc = encrypt(new["api_token"]) if new["api_token"] else None
     row.updated_by = actor
     db.add(row)
     db.flush()
-    audit(db, actor, "JIRA_SETTINGS_SAVED", None, "SETTINGS", JIRA_KEY, mode=new["mode"], base_url=new["base_url"],
-          email=new["email"], token_changed=bool(data.get("api_token") or data.get("clear_token")))
+    audit(
+        db,
+        actor,
+        "JIRA_SETTINGS_SAVED",
+        None,
+        "SETTINGS",
+        JIRA_KEY,
+        mode=new["mode"],
+        base_url=new["base_url"],
+        email=new["email"],
+        token_changed=bool(data.get("api_token") or data.get("clear_token")),
+    )
     return public_jira(get_jira_config(db))

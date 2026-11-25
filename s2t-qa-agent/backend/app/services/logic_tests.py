@@ -15,6 +15,7 @@ becomes a test on the uploaded target:
 The properties follow from the SQL, so a target that violates one cannot have been produced by that logic. Each
 test names the SQL fragment it came from.
 """
+
 from __future__ import annotations
 
 import re
@@ -133,8 +134,11 @@ def props(e: exp.Expression, depth: int = 0) -> dict:
         branches = [i.args.get("true") for i in e.args.get("ifs", [])]
         default = e.args.get("default")
         vals = branches + ([default] if default is not None else [])
-        out = _meet([props(v, depth + 1) for v in vals]) if default is not None else \
-            {k: v for k, v in _meet([props(v, depth + 1) for v in vals]).items() if k != "NOT_NULL"}
+        out = (
+            _meet([props(v, depth + 1) for v in vals])
+            if default is not None
+            else {k: v for k, v in _meet([props(v, depth + 1) for v in vals]).items() if k != "NOT_NULL"}
+        )
         if vals and all(isinstance(v, exp.Literal) for v in vals):
             out["ALLOWED_VALUES"] = sorted({v.this for v in vals})
             out["_ALLOW_NULL"] = default is None
@@ -162,9 +166,14 @@ class Logic:
             return
         sel = tree if isinstance(tree, exp.Select) else None
         if sel is None:
-            self.error = "The transformation is not a single SELECT (e.g. UNION); logic tests cover single SELECTs only"
+            self.error = (
+                "The transformation combines several SELECTs (e.g. UNION); logic tests cover a single SELECT only"
+                if isinstance(tree, exp.SetOperation)
+                else "The transformation SQL is not a SELECT statement"
+            )
             return
-        ctes = {c.alias_or_name: c.this for c in (sel.args.get("with").expressions if sel.args.get("with") else [])}
+        with_ = sel.args.get("with_") or sel.args.get("with")  # the argument name differs between sqlglot versions
+        ctes = {c.alias_or_name: c.this for c in (with_.expressions if with_ else [])}
         subqs = {}
         f = _from(sel)
         items = ([f.this] if f else []) + [j.this for j in sel.args.get("joins") or []]
@@ -173,11 +182,14 @@ class Logic:
                 subqs[it.alias_or_name] = it.this
         self._defs = {**ctes, **subqs}
         self.distinct = bool(sel.args.get("distinct"))
+        self._raw: list[tuple[str, exp.Expression]] = []
         for p in sel.expressions:
             if isinstance(p, exp.Star):
                 continue
             name = p.alias_or_name
-            self.columns.append((name, self._resolve(p.this if isinstance(p, exp.Alias) else p)))
+            raw = p.this if isinstance(p, exp.Alias) else p
+            self._raw.append((name, raw))
+            self.columns.append((name, self._resolve(raw)))
         if f:
             self.base = _src(f.this)
         for j in sel.args.get("joins") or []:
@@ -188,12 +200,11 @@ class Logic:
             on = j.args.get("on")
             pairs = []
             if on is not None:
-                for eq in ([on] if isinstance(on, exp.EQ) else list(on.find_all(exp.EQ))):
-                    l, r = eq.this, eq.expression
-                    if isinstance(l, exp.Column) and isinstance(r, exp.Column):
-                        pairs.append((l.table, l.name, r.table, r.name))
-            self.joins.append({"type": jt, "table": table, "alias": alias, "conds": conds, "pairs": pairs,
-                               "sql": j.sql("duckdb")})
+                for eq in [on] if isinstance(on, exp.EQ) else list(on.find_all(exp.EQ)):
+                    lhs, rhs = eq.this, eq.expression
+                    if isinstance(lhs, exp.Column) and isinstance(rhs, exp.Column):
+                        pairs.append((lhs.table, lhs.name, rhs.table, rhs.name))
+            self.joins.append({"type": jt, "table": table, "alias": alias, "conds": conds, "pairs": pairs, "sql": j.sql("duckdb")})
         w = sel.args.get("where")
         self.where = w.this.sql("duckdb") if w is not None else None
         g = sel.args.get("group")
@@ -203,7 +214,15 @@ class Logic:
             else:
                 names = []
                 for x in g.expressions:
-                    hit = next((n for n, e in self.columns if e.sql() == x.sql() or (isinstance(x, exp.Column) and n.upper() == x.name.upper())), None)
+                    # GROUP BY names the projection's source expression (c.ID) or its output name (CUSTOMER_ID)
+                    hit = next(
+                        (
+                            n
+                            for n, raw in self._raw
+                            if raw.sql() == x.sql() or (isinstance(x, exp.Column) and not x.table and n.upper() == x.name.upper())
+                        ),
+                        None,
+                    )
                     if hit:
                         names.append(hit)
                 self.group = names
@@ -260,10 +279,16 @@ def generate(b, ctx, version) -> None:
         return
     lg = Logic(version.code or "")
     tcols = {c["name"].upper(): c["name"] for c in (ctx.target.columns if ctx.target else [])}
-    covered = {(t.validation.get("column") or "").upper() for t in b.out
-               if t.track == "ACTUAL" and t.validation.get("type") == "COLUMN_MATCH" and t.state == "READY"}
-    have = {(t.validation.get("type"), str(t.validation.get("columns") or t.validation.get("column") or t.validation.get("base")))
-            for t in b.out if t.track == "ACTUAL"}
+    covered = {
+        (t.validation.get("column") or "").upper()
+        for t in b.out
+        if t.track == "ACTUAL" and t.validation.get("type") == "COLUMN_MATCH" and t.state == "READY"
+    }
+    have = {
+        (t.validation.get("type"), str(t.validation.get("columns") or t.validation.get("column") or t.validation.get("base")))
+        for t in b.out
+        if t.track == "ACTUAL"
+    }
     tag = f"v{version.version}"
     sc = (ctx.run.settings or {}).get("string_compare", {})
 
@@ -276,12 +301,25 @@ def generate(b, ctx, version) -> None:
         if C.upper() not in covered and C.upper() not in {k.upper() for k in ctx.keys}:
             pm = re.search(r"ROUND\(.*,\s*(\d+)\)", frag, re.I)
             tol = 0.5 / (10 ** int(pm.group(1))) if pm else float((ctx.run.settings or {}).get("default_numeric_tolerance", 0.0))
-            b.add(G, "POSITIVE", "ACTUAL", "TRANSFORMATION_LOGIC", f"{C} in the uploaded target matches the transformation logic",
-                  {"type": "COLUMN_MATCH", "column": C, "keys": ctx.keys, "tolerance": tol, "trim": bool(sc.get("trim")),
-                   "case_insensitive": bool(sc.get("case_insensitive"))},
-                  expected=f"Every {C} equals the value of: {short}", rationale=f"Derived from the SQL ({tag}): {short}. "
-                  "No acceptance criterion covers this column.", basis="TRANSFORMATION_LOGIC",
-                  blocked=None if ctx.keys else "No business key; record-level comparison cannot be performed")
+            b.add(
+                G,
+                "POSITIVE",
+                "ACTUAL",
+                "TRANSFORMATION_LOGIC",
+                f"{C} in the uploaded target matches the transformation logic",
+                {
+                    "type": "COLUMN_MATCH",
+                    "column": C,
+                    "keys": ctx.keys,
+                    "tolerance": tol,
+                    "trim": bool(sc.get("trim")),
+                    "case_insensitive": bool(sc.get("case_insensitive")),
+                },
+                expected=f"Every {C} equals the value of: {short}",
+                rationale=f"Derived from the SQL ({tag}): {short}. No acceptance criterion covers this column.",
+                basis="TRANSFORMATION_LOGIC",
+                blocked=None if ctx.keys else "No business key; record-level comparison cannot be performed",
+            )
         pr = props(e)
         for k in ORDER:
             if k not in pr:
@@ -299,20 +337,36 @@ def generate(b, ctx, version) -> None:
             ttype, title, expected = PROP_TEXT[k]
             a = pr[k]
             shown = ", ".join(a) if isinstance(a, list) else a
-            v = {"type": "VALUE_PROPERTY", "table": "actual", "column": C, "property": k,
-                 "arg": a if k in ("MAX_DECIMALS", "MAX_LENGTH", "ALLOWED_VALUES") else None,
-                 "allow_null": bool(pr.get("_ALLOW_NULL")) if k == "ALLOWED_VALUES" else None, "columns": f"{C}:{k}"}
-            b.add(G, ttype, "ACTUAL", "TRANSFORMATION_LOGIC", title.format(c=C, a=shown), v,
-                  expected=expected.format(a=shown, fb=pr.get("_FALLBACK", "")),
-                  rationale=f"Derived from the SQL ({tag}): {C} = {short}", basis="TRANSFORMATION_LOGIC", priority="P2")
+            v = {
+                "type": "VALUE_PROPERTY",
+                "table": "actual",
+                "column": C,
+                "property": k,
+                "arg": a if k in ("MAX_DECIMALS", "MAX_LENGTH", "ALLOWED_VALUES") else None,
+                "allow_null": bool(pr.get("_ALLOW_NULL")) if k == "ALLOWED_VALUES" else None,
+                "columns": f"{C}:{k}",
+            }
+            b.add(
+                G,
+                ttype,
+                "ACTUAL",
+                "TRANSFORMATION_LOGIC",
+                title.format(c=C, a=shown),
+                v,
+                expected=expected.format(a=shown, fb=pr.get("_FALLBACK", "")),
+                rationale=f"Derived from the SQL ({tag}): {C} = {short}",
+                basis="TRANSFORMATION_LOGIC",
+                priority="P2",
+            )
 
     base_table, base_alias, base_conds = lg.base
     for j in lg.joins:
         if not j["table"] or not j["pairs"]:
             continue
         # the base side of the ON clause and the target column that copies it
-        p = next(((lt, lc, rt, rc) for lt, lc, rt, rc in j["pairs"] if lt == base_alias and rt == j["alias"]), None) or \
-            next(((rt, rc, lt, lc) for lt, lc, rt, rc in j["pairs"] if rt == base_alias and lt == j["alias"]), None)
+        p = next(((lt, lc, rt, rc) for lt, lc, rt, rc in j["pairs"] if lt == base_alias and rt == j["alias"]), None) or next(
+            ((rt, rc, lt, lc) for lt, lc, rt, rc in j["pairs"] if rt == base_alias and lt == j["alias"]), None
+        )
         if not p or not base_table:
             continue
         _, bk, _, rk = p
@@ -321,18 +375,40 @@ def generate(b, ctx, version) -> None:
             continue
         T = tcols[out.upper()]
         if j["type"] == "LEFT" and not base_conds and not lg.where:
-            b.add(G, "POSITIVE", "ACTUAL", "TRANSFORMATION_LOGIC", f"The LEFT JOIN keeps every {base_table} record in the uploaded target",
-                  {"type": "KEY_COVERAGE", "base": base_table, "base_key": bk, "key": T},
-                  expected=f"Every {base_table}.{bk} appears as {T}", rationale=f"Derived from the SQL ({tag}): {j['sql'][:200]}",
-                  basis="TRANSFORMATION_LOGIC", priority="P1")
+            b.add(
+                G,
+                "POSITIVE",
+                "ACTUAL",
+                "TRANSFORMATION_LOGIC",
+                f"The LEFT JOIN keeps every {base_table} record in the uploaded target",
+                {"type": "KEY_COVERAGE", "base": base_table, "base_key": bk, "key": T},
+                expected=f"Every {base_table}.{bk} appears as {T}",
+                rationale=f"Derived from the SQL ({tag}): {j['sql'][:200]}",
+                basis="TRANSFORMATION_LOGIC",
+                priority="P1",
+            )
         elif j["type"] == "INNER":
-            src = (f"SELECT DISTINCT b.{_q(bk)} FROM {_q('src_' + base_table)} AS b JOIN {_q('src_' + j['table'])} AS r "
-                   f"ON b.{_q(bk)} = r.{_q(rk)}")
-            b.add(G, "NEGATIVE", "ACTUAL", "TRANSFORMATION_LOGIC", f"Records without a matching {j['table']} row are not in the uploaded target (INNER JOIN)",
-                  {"type": "KEY_SUBSET", "table": "actual", "key": T, "source_sql": src,
-                   "source_desc": f"{base_table} records that have a match in {j['table']}"},
-                  expected=f"Every {T} has a matching {j['table']}.{rk}", rationale=f"Derived from the SQL ({tag}): {j['sql'][:200]}",
-                  basis="TRANSFORMATION_LOGIC")
+            src = (
+                f"SELECT DISTINCT b.{_q(bk)} FROM {_q('src_' + base_table)} AS b JOIN {_q('src_' + j['table'])} AS r "
+                f"ON b.{_q(bk)} = r.{_q(rk)}"
+            )
+            b.add(
+                G,
+                "NEGATIVE",
+                "ACTUAL",
+                "TRANSFORMATION_LOGIC",
+                f"Records without a matching {j['table']} row are not in the uploaded target (INNER JOIN)",
+                {
+                    "type": "KEY_SUBSET",
+                    "table": "actual",
+                    "key": T,
+                    "source_sql": src,
+                    "source_desc": f"{base_table} records that have a match in {j['table']}",
+                },
+                expected=f"Every {T} has a matching {j['table']}.{rk}",
+                rationale=f"Derived from the SQL ({tag}): {j['sql'][:200]}",
+                basis="TRANSFORMATION_LOGIC",
+            )
 
     # filter on the base table (in a derived table or in WHERE when it only references the base)
     if base_table:
@@ -342,22 +418,43 @@ def generate(b, ctx, version) -> None:
         kcol = next((c for c in ctx.keys if lg.output_of(base_alias, c)), None)
         if conds and kcol:
             T = tcols.get(lg.output_of(base_alias, kcol).upper())
-            src = f"SELECT DISTINCT {_q(base_alias)}.{_q(kcol)} FROM {_q('src_' + base_table)} AS {_q(base_alias)} WHERE " + " AND ".join(f"({c})" for c in conds)
+            src = f"SELECT DISTINCT {_q(base_alias)}.{_q(kcol)} FROM {_q('src_' + base_table)} AS {_q(base_alias)} WHERE " + " AND ".join(
+                f"({c})" for c in conds
+            )
             if T:
-                b.add(G, "NEGATIVE", "ACTUAL", "TRANSFORMATION_LOGIC", f"{base_table} records that fail the filter are not in the uploaded target",
-                      {"type": "KEY_SUBSET", "table": "actual", "key": T, "source_sql": src,
-                       "source_desc": f"{base_table} records where {' AND '.join(conds)}"},
-                      expected="0 records that fail the filter", rationale=f"Derived from the SQL ({tag}): WHERE {' AND '.join(conds)}",
-                      basis="TRANSFORMATION_LOGIC")
+                b.add(
+                    G,
+                    "NEGATIVE",
+                    "ACTUAL",
+                    "TRANSFORMATION_LOGIC",
+                    f"{base_table} records that fail the filter are not in the uploaded target",
+                    {
+                        "type": "KEY_SUBSET",
+                        "table": "actual",
+                        "key": T,
+                        "source_sql": src,
+                        "source_desc": f"{base_table} records where {' AND '.join(conds)}",
+                    },
+                    expected="0 records that fail the filter",
+                    rationale=f"Derived from the SQL ({tag}): WHERE {' AND '.join(conds)}",
+                    basis="TRANSFORMATION_LOGIC",
+                )
 
     if lg.group:
         gcols = [tcols[c.upper()] for c in lg.group if c.upper() in tcols]
         keyed = [k for k in ctx.keys if k.upper() in {c.upper() for c in gcols}] or gcols
         if keyed:
-            b.add(G, "NEGATIVE", "ACTUAL", "TRANSFORMATION_LOGIC", f"The uploaded target has one row per {', '.join(keyed)} (GROUP BY)",
-                  {"type": "KEY_UNIQUE", "columns": keyed, "table": "actual"},
-                  expected="0 duplicate groups", rationale=f"Derived from the SQL ({tag}): {getattr(lg, '_group_sql', 'GROUP BY')}",
-                  basis="TRANSFORMATION_LOGIC")
+            b.add(
+                G,
+                "NEGATIVE",
+                "ACTUAL",
+                "TRANSFORMATION_LOGIC",
+                f"The uploaded target has one row per {', '.join(keyed)} (GROUP BY)",
+                {"type": "KEY_UNIQUE", "columns": keyed, "table": "actual"},
+                expected="0 duplicate groups",
+                rationale=f"Derived from the SQL ({tag}): {getattr(lg, '_group_sql', 'GROUP BY')}",
+                basis="TRANSFORMATION_LOGIC",
+            )
 
 
 def _q(n: str) -> str:

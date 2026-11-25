@@ -1,4 +1,5 @@
 """Application settings. All secrets come from environment variables (see .env.example)."""
+
 from __future__ import annotations
 
 import os
@@ -24,8 +25,9 @@ def _int(name: str, default: int) -> int:
 class Settings:
     env: str = field(default_factory=lambda: os.getenv("QA_ENV", "dev"))
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
-    storage_dir: Path = field(default_factory=lambda: Path(
-        os.getenv("QA_STORAGE_DIR") or Path(__file__).resolve().parents[1] / "var" / "storage").resolve())
+    storage_dir: Path = field(
+        default_factory=lambda: Path(os.getenv("QA_STORAGE_DIR") or Path(__file__).resolve().parents[1] / "var" / "storage").resolve()
+    )
 
     # Jira
     jira_mode: str = field(default_factory=lambda: os.getenv("JIRA_MODE", "mock"))  # mock | cloud
@@ -61,9 +63,7 @@ class Settings:
     # Governance
     sensitive_column_patterns: list[str] = field(
         default_factory=lambda: [
-            p.strip().upper()
-            for p in os.getenv("QA_SENSITIVE_COLUMNS", "EMAIL,PHONE,SSN,PAN,AADHAAR,PASSWORD,DOB").split(",")
-            if p.strip()
+            p.strip().upper() for p in os.getenv("QA_SENSITIVE_COLUMNS", "EMAIL,PHONE,SSN,PAN,AADHAAR,PASSWORD,DOB").split(",") if p.strip()
         ]
     )
     # Auth: "token:user:role:project1|project2,..."  roles: viewer|analyst|approver|admin

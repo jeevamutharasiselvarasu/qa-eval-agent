@@ -7,6 +7,7 @@ Providers:
 All responses are validated against pydantic schemas before use. Jira text and dataset content are
 passed as clearly delimited untrusted data.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,8 +36,19 @@ class LLMError(Exception):
 
 # ----------------------------------------------------------------- schemas
 class ProposedRule(BaseModel):
-    kind: Literal["DERIVED_COLUMN", "DIRECT_MAPPING", "FILTER", "JOIN", "UNIQUE_KEY", "NOT_NULL",
-                  "BUSINESS_KEY", "PRECISION", "DATA_TYPE", "BUSINESS_RULE", "OTHER"]
+    kind: Literal[
+        "DERIVED_COLUMN",
+        "DIRECT_MAPPING",
+        "FILTER",
+        "JOIN",
+        "UNIQUE_KEY",
+        "NOT_NULL",
+        "BUSINESS_KEY",
+        "PRECISION",
+        "DATA_TYPE",
+        "BUSINESS_RULE",
+        "OTHER",
+    ]
     description: str = Field(max_length=1000)
     target_column: str | None = None
     evidence_quote: str = Field(default="", max_length=1000)
@@ -87,27 +99,41 @@ class MockLLM(BaseLLM):
         rules: list[ProposedRule] = []
         # infer decimal type for columns that are rounded
         for m in re.finditer(r"([A-Z][A-Z0-9_]+)\s*=.*?rounded to (\d+) decimals", jira_text):
-            rules.append(ProposedRule(kind="DATA_TYPE", target_column=m.group(1),
-                                      description=f"{m.group(1)} is likely DECIMAL with scale {m.group(2)}",
-                                      evidence_quote=m.group(0)[:300], confidence="MEDIUM"))
+            rules.append(
+                ProposedRule(
+                    kind="DATA_TYPE",
+                    target_column=m.group(1),
+                    description=f"{m.group(1)} is likely DECIMAL with scale {m.group(2)}",
+                    evidence_quote=m.group(0)[:300],
+                    confidence="MEDIUM",
+                )
+            )
         if re.search(r"\bINR\b", jira_text):
-            rules.append(ProposedRule(kind="OTHER", description="Monetary columns appear to be single-currency (INR); "
-                                      "no currency conversion is implied.", evidence_quote="in INR", confidence="LOW"))
+            rules.append(
+                ProposedRule(
+                    kind="OTHER",
+                    description="Monetary columns appear to be single-currency (INR); no currency conversion is implied.",
+                    evidence_quote="in INR",
+                    confidence="LOW",
+                )
+            )
         return ProposedRules(rules=rules, gaps=[])
 
     def generate_code(self, mode: str, context: dict, instruction: str = "") -> CodeProposal:
         # The mock relies on the deterministic compiler output supplied in context.
         if mode == "SQL" and context.get("compiled_sql"):
-            return CodeProposal(code=context["compiled_sql"],
-                                explanation="Built by the deterministic template (mock provider: "
-                                            "deterministic template, not a language model).")
+            return CodeProposal(
+                code=context["compiled_sql"],
+                explanation="Built by the deterministic template (mock provider: deterministic template, not a language model).",
+            )
         if mode == "PYTHON" and context.get("compiled_python"):
-            return CodeProposal(code=context["compiled_python"],
-                                explanation="Generated from accepted mappings (mock provider template).")
+            return CodeProposal(code=context["compiled_python"], explanation="Generated from accepted mappings (mock provider template).")
         if context.get("current_code"):
-            return CodeProposal(code=context["current_code"],
-                                explanation="Mock provider cannot apply free-text edits. Configure LLM_MODE=openai "
-                                            "for instruction-based modification. Code returned unchanged.")
+            return CodeProposal(
+                code=context["current_code"],
+                explanation="Mock provider cannot apply free-text edits. Configure LLM_MODE=openai "
+                "for instruction-based modification. Code returned unchanged.",
+            )
         raise LLMError("Mock provider needs accepted mappings to generate code")
 
     def explain_code(self, mode: str, code: str, context: dict) -> Explanation:
@@ -117,8 +143,9 @@ class MockLLM(BaseLLM):
             except Exception as e:  # noqa: BLE001
                 return Explanation(explanation=f"The SQL does not parse: {e}")
             tables = sorted({t.name for t in tree.find_all(exp.Table)})
-            joins = [f"{(j.args.get('side') or j.args.get('kind') or 'INNER')} JOIN {j.this.sql('duckdb')}"
-                     for j in tree.find_all(exp.Join)]
+            joins = [
+                f"{(j.args.get('side') or j.args.get('kind') or 'INNER')} JOIN {j.this.sql('duckdb')}" for j in tree.find_all(exp.Join)
+            ]
             aggs = sorted({a.key.upper() for a in tree.find_all(exp.AggFunc)})
             where = tree.args.get("where")
             group = tree.args.get("group")
@@ -133,7 +160,9 @@ class MockLLM(BaseLLM):
             lines.append(f"Outputs columns: {', '.join(outs)}.")
             return Explanation(explanation=" ".join(lines))
         funcs = re.findall(r"\.(merge|groupby|agg|fillna|round|str\.\w+|query|drop_duplicates)\(", code)
-        return Explanation(explanation="Python transform() using pandas operations: " + (", ".join(dict.fromkeys(funcs)) or "none detected") + ".")
+        return Explanation(
+            explanation="Python transform() using pandas operations: " + (", ".join(dict.fromkeys(funcs)) or "none detected") + "."
+        )
 
     def fix_code(self, mode: str, code: str, error: str, context: dict) -> CodeProposal:
         cols: list[str] = context.get("known_columns", [])
@@ -141,11 +170,14 @@ class MockLLM(BaseLLM):
         if m and cols:
             bad = m.group(1)
             import difflib
+
             cand = difflib.get_close_matches(bad.upper(), [c.upper() for c in cols], n=1, cutoff=0.6)
             if cand:
                 real = next(c for c in cols if c.upper() == cand[0])
-                return CodeProposal(code=re.sub(rf"\b{re.escape(bad)}\b", real, code),
-                                    explanation=f"Replaced unknown column '{bad}' with closest known column '{real}'. Review before approving.")
+                return CodeProposal(
+                    code=re.sub(rf"\b{re.escape(bad)}\b", real, code),
+                    explanation=f"Replaced unknown column '{bad}' with closest known column '{real}'. Review before approving.",
+                )
         return CodeProposal(code=code, explanation="Mock provider could not determine a fix automatically. Error was: " + error[:500])
 
     def analyze_failure(self, evidence: dict) -> FailureAnalysisOut:
@@ -162,8 +194,10 @@ class MockLLM(BaseLLM):
             col = evidence.get("column")
             numeric = [d for d in diffs if isinstance(d.get("difference"), (int, float))]
             if numeric:
-                hyp.append(f"Differences in {col} are numeric; possible calculation-rule difference between the "
-                           f"target load and the approved transformation (e.g. a component applied twice or omitted).")
+                hyp.append(
+                    f"Differences in {col} are numeric; possible calculation-rule difference between the "
+                    f"target load and the approved transformation (e.g. a component applied twice or omitted)."
+                )
                 src_hits = evidence.get("source_value_matches", [])
                 if src_hits:
                     likely.append("The difference equals a source value for the same key: " + "; ".join(src_hits[:3]))
@@ -172,8 +206,10 @@ class MockLLM(BaseLLM):
                 hyp.append(f"Text differences in {col}; check trimming/case normalization in the target load.")
                 same = [d for d in diffs if str(d.get("actual", "")).strip().upper() == str(d.get("expected", "")).strip().upper()]
                 if same:
-                    likely.append(f"{len(same)} of {len(diffs)} sampled values differ only by case and/or leading/trailing "
-                                  "whitespace, consistent with the UPPER/TRIM normalization not being applied in the target load.")
+                    likely.append(
+                        f"{len(same)} of {len(diffs)} sampled values differ only by case and/or leading/trailing "
+                        "whitespace, consistent with the UPPER/TRIM normalization not being applied in the target load."
+                    )
                     layer = "TARGET_DATA"
             checks.append(f"Inspect target load logic for {col} for the listed keys.")
             checks.append("Confirm the approved rule with the requirement owner if the target is believed correct.")
@@ -185,8 +221,10 @@ class MockLLM(BaseLLM):
             layer = "TARGET_DATA"
         elif check == "KEY_COVERAGE":
             cat = "MISSING_BASE_RECORDS"
-            likely.append("Base records required by the join rule are absent from the target; this overlaps with the "
-                          "missing-records reconciliation result.")
+            likely.append(
+                "Base records required by the join rule are absent from the target; this overlaps with the "
+                "missing-records reconciliation result."
+            )
             hyp.append("The target load may use an INNER join or a post-join filter instead of the approved LEFT join.")
             checks.append("Check the listed keys in the target load's join/filter logic.")
             layer = "TARGET_DATA"
@@ -207,8 +245,14 @@ class MockLLM(BaseLLM):
         elif check == "ROW_COUNT":
             cat = "COUNT_MISMATCH"
             hyp.append("Count difference is explained by the missing/extra record checks; review those first.")
-        return FailureAnalysisOut(category=cat, suspected_layer=layer, confirmed_facts=facts,
-                                  likely_explanations=likely, unverified_hypotheses=hyp, recommended_checks=checks)
+        return FailureAnalysisOut(
+            category=cat,
+            suspected_layer=layer,
+            confirmed_facts=facts,
+            likely_explanations=likely,
+            unverified_hypotheses=hyp,
+            recommended_checks=checks,
+        )
 
 
 # ----------------------------------------------------------------- openai-compatible
@@ -221,13 +265,18 @@ class OpenAILLM(BaseLLM):
             raise LLMError("LLM_API_KEY is not set")
         self.model = s.llm_model
         self.url = s.llm_base_url.rstrip("/") + "/chat/completions"
-        self.client = client or httpx.Client(timeout=s.llm_timeout_s,
-                                             headers={"Authorization": f"Bearer {s.llm_api_key}"})
+        self.client = client or httpx.Client(timeout=s.llm_timeout_s, headers={"Authorization": f"Bearer {s.llm_api_key}"})
 
     def _call(self, user: str, schema: type[BaseModel]) -> BaseModel:
-        body = {"model": self.model, "temperature": 0, "response_format": {"type": "json_object"},
-                "messages": [{"role": "system", "content": SYSTEM_PROMPT},
-                             {"role": "user", "content": user + "\n\nJSON schema:\n" + json.dumps(schema.model_json_schema())}]}
+        body = {
+            "model": self.model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user + "\n\nJSON schema:\n" + json.dumps(schema.model_json_schema())},
+            ],
+        }
         try:
             r = self.client.post(self.url, json=body)
             r.raise_for_status()
@@ -237,28 +286,43 @@ class OpenAILLM(BaseLLM):
             raise LLMError(f"LLM call failed or returned invalid output: {e}") from e
 
     def propose_rules(self, jira_text: str) -> ProposedRules:
-        return self._call("Extract candidate source-to-target rules and open questions from this Jira content. "
-                          "Quote evidence verbatim.\n<untrusted>\n" + jira_text[:30000] + "\n</untrusted>", ProposedRules)
+        return self._call(
+            "Extract candidate source-to-target rules and open questions from this Jira content. "
+            "Quote evidence verbatim.\n<untrusted>\n" + jira_text[:30000] + "\n</untrusted>",
+            ProposedRules,
+        )
 
     def generate_code(self, mode: str, context: dict, instruction: str = "") -> CodeProposal:
-        lang = "DuckDB SQL (a single SELECT statement)" if mode == "SQL" else (
-            "Python defining `def transform(sources: dict[str, pandas.DataFrame]) -> pandas.DataFrame` using only pandas/numpy")
+        lang = (
+            "DuckDB SQL (a single SELECT statement)"
+            if mode == "SQL"
+            else ("Python defining `def transform(sources: dict[str, pandas.DataFrame]) -> pandas.DataFrame` using only pandas/numpy")
+        )
         ctx = {k: v for k, v in context.items() if k in ("datasets", "mappings", "requirements", "current_code", "target_columns")}
-        return self._call(f"Write {lang}. Use only the listed datasets/columns. Follow accepted requirements exactly; "
-                          f"do not invent rules.\nInstruction: {instruction or 'implement accepted mappings'}\n"
-                          f"<untrusted>\n{json.dumps(ctx, default=str)[:30000]}\n</untrusted>", CodeProposal)
+        return self._call(
+            f"Write {lang}. Use only the listed datasets/columns. Follow accepted requirements exactly; "
+            f"do not invent rules.\nInstruction: {instruction or 'implement accepted mappings'}\n"
+            f"<untrusted>\n{json.dumps(ctx, default=str)[:30000]}\n</untrusted>",
+            CodeProposal,
+        )
 
     def explain_code(self, mode: str, code: str, context: dict) -> Explanation:
         return self._call(f"Explain this {mode} transformation for a QA analyst.\n<untrusted>\n{code[:20000]}\n</untrusted>", Explanation)
 
     def fix_code(self, mode: str, code: str, error: str, context: dict) -> CodeProposal:
-        return self._call(f"Fix this {mode} code. Error:\n{error[:4000]}\nKnown columns: {context.get('known_columns', [])}\n"
-                          f"<untrusted>\n{code[:20000]}\n</untrusted>", CodeProposal)
+        return self._call(
+            f"Fix this {mode} code. Error:\n{error[:4000]}\nKnown columns: {context.get('known_columns', [])}\n"
+            f"<untrusted>\n{code[:20000]}\n</untrusted>",
+            CodeProposal,
+        )
 
     def analyze_failure(self, evidence: dict) -> FailureAnalysisOut:
-        return self._call("Analyze this deterministic test failure. Separate confirmed facts (only those present in "
-                          "the evidence), likely explanations and unverified hypotheses. You cannot change the status.\n"
-                          f"<untrusted>\n{json.dumps(evidence, default=str)[:30000]}\n</untrusted>", FailureAnalysisOut)
+        return self._call(
+            "Analyze this deterministic test failure. Separate confirmed facts (only those present in "
+            "the evidence), likely explanations and unverified hypotheses. You cannot change the status.\n"
+            f"<untrusted>\n{json.dumps(evidence, default=str)[:30000]}\n</untrusted>",
+            FailureAnalysisOut,
+        )
 
 
 def get_llm() -> BaseLLM:

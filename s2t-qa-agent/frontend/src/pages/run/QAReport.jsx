@@ -1,8 +1,7 @@
-import React from 'react'
 import { FileText, FileSpreadsheet, FileJson, BarChart3, ExternalLink } from 'lucide-react'
 import { api } from '../../api.js'
 import { useRun } from '../RunWorkspace.jsx'
-import { Badge, Btn, Card, DataTable, Empty, Ids, Stat, STATUS_COLORS, fmtDate, useAction, useLoad } from '../../components/ui.jsx'
+import { Badge, Btn, Card, DataTable, Empty, Ids, Loading, STATUS_COLORS, Stat, fmtDate, humanize, useAction, useLoad } from '../../components/ui.jsx'
 
 export default function QAReport({ refreshKey = 0 }) {
   const { runId, reload: reloadRun } = useRun()
@@ -11,13 +10,13 @@ export default function QAReport({ refreshKey = 0 }) {
   const [busy, act] = useAction()
   const gen = () => act('gen', async () => { await api.post(`/runs/${runId}/reports`, {}); reload(); reloadData(); reloadRun() }, 'Report generated (Excel, HTML, JSON, Power BI)')
   const dl = (r, fmt) => act(fmt, () => api.download(`/reports/${r.id}/download/${fmt}`, `${runId}_${fmt === 'powerbi' ? 'powerbi_tables.zip' : 'report.' + fmt}`))
-  if (!d) return <Empty>Loading…</Empty>
+  if (!d) return <Loading rows={5} />
   const s = d.summary
   const c = s.counts
   return (
     <div className="col">
       <Card title={<div className="row gap-s"><h3>QA report · {s.jira_ticket}</h3><Badge s={s.overall === 'PASS' ? 'PASS' : s.overall === 'NO_EXECUTION' ? '' : s.overall.startsWith('PASS') ? 'BLOCKED' : 'FAIL'}>{s.overall.replaceAll('_', ' ')}</Badge></div>}
-        sub={`${s.selection ? `${s.selection.selected} of ${s.selection.in_pack} test cases run · ` : ''}Executions: ${s.executions.map(e => `${e.execution_id} (${e.track.toLowerCase()})`).join(', ') || 'none'}`}
+        sub={`${s.selection ? `${s.selection.selected} of ${s.selection.in_pack} test cases run · ` : ''}Execution: ${s.executions.map(e => e.execution_id).join(', ') || 'none'}`}
         actions={<Btn className="primary" icon={FileText} busy={busy === 'gen'} disabled={!s.executions.length} onClick={gen}>Generate report files</Btn>}>
         <div className="grid g6">
           <Stat label="Total tests" value={c.total} />
@@ -46,7 +45,7 @@ export default function QAReport({ refreshKey = 0 }) {
         </table></div>}
       </Card>
       {d.reconciliation && Object.keys(d.reconciliation).length > 0 && <Card title="Actual-data reconciliation">
-        <div className="grid g6">{Object.entries(d.reconciliation).map(([k, v]) => <Stat key={k} label={k.replaceAll('_', ' ')} value={v ?? '—'} />)}</div>
+        <div className="grid g6">{Object.entries(d.reconciliation).map(([k, v]) => <Stat key={k} label={humanize(k)} value={v ?? '—'} />)}</div>
       </Card>}
       <Card title="Column-level differences" flush>{d.column_differences.length ? <DataTable rows={d.column_differences} columns={['test_case_id', 'business_key', 'column', 'expected', 'actual', 'difference']} /> : <Empty>No column differences.</Empty>}</Card>
       <Card title="AI failure analysis" sub="Advisory; separated into confirmed facts, likely explanations and unverified hypotheses." flush>
@@ -57,12 +56,6 @@ export default function QAReport({ refreshKey = 0 }) {
               {['confirmed_facts', 'likely_explanations', 'unverified_hypotheses', 'recommended_checks'].map(k => <td key={k} className="tiny" style={{ maxWidth: 240 }}>{(f[k] || []).map((x, i) => <div key={i}>• {x}</div>)}</td>)}</tr>))}</tbody>
         </table></div> : <Empty>No failures analysed.</Empty>}
       </Card>
-      <Card title="Synthetic testing" flush>{d.synthetic.length ? <div className="tw"><table className="t">
-        <thead><tr><th>Scenario</th><th>Status</th><th>Seed</th><th>Explanation</th><th>Results</th></tr></thead>
-        <tbody>{d.synthetic.map(s => <tr key={s.scenario_id}><td><span className="mono small">{s.scenario_id}</span><div className="small">{s.scenario}</div></td><td><Badge s={s.status} />{s.blocked_reason && <div className="tiny" style={{ color: 'var(--blocked)' }}>{s.blocked_reason}</div>}</td>
-          <td className="mono small">{s.seed}</td><td className="tiny" style={{ maxWidth: 360 }}>{s.explanation}</td>
-          <td>{Object.entries(s.results).map(([k, v]) => <div key={k} className="row gap-s tiny"><span className="mono">{k}</span><Badge s={v} /></div>)}</td></tr>)}</tbody>
-      </table></div> : <Empty>No synthetic scenarios.</Empty>}</Card>
     </div>
   )
 }

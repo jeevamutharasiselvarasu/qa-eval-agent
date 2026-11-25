@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Play, Loader2 } from 'lucide-react'
 import { api } from '../../api.js'
@@ -6,6 +6,7 @@ import { useRun } from '../RunWorkspace.jsx'
 import { Alert, Badge, Btn, Card, Empty, ResultBar, useAction, useLoad } from '../../components/ui.jsx'
 import ExecutionMonitor, { ResultModal } from './ExecutionMonitor.jsx'
 import QAReport from './QAReport.jsx'
+import StepNav from './StepNav.jsx'
 import { TypeBadge, useLatestResults } from './TestCases.jsx'
 
 export default function Results() {
@@ -44,21 +45,17 @@ export default function Results() {
 
   return (
     <div className="col">
-      <Card title="Run validation" sub="Runs the selected test cases: Track A on the uploaded files and Track B on the synthetic edge-case data. A report covering exactly those tests is created at the end."
+      <StepNav step="results" />
+      <Card title="Run validation" sub="Runs the selected test cases on the uploaded files: the uploaded target is compared with the expected target the approved SQL builds from the uploaded sources. A report covering exactly those tests is created at the end."
         actions={<Btn className="primary" icon={running ? Loader2 : Play} busy={busy === 'run'} disabled={running || !pack?.pack_approved || pack?.transformation !== 'APPROVED' || !pack?.selected} onClick={runAll}>
           {running ? 'Running…' : `Run selected (${pack?.selected ?? 0})`}</Btn>}>
         {pack && <div className="small mb">{pack.selected} of {pack.test_cases} test cases selected. <Link to={`/runs/${runId}/tests`}>Change the selection</Link></div>}
         {pack && (!pack.pack_approved || pack.transformation !== 'APPROVED') &&
-          <div className="mb"><Alert kind="warn">Both approvals are needed first: transformation <Badge s={pack.transformation} /> and test pack <Badge s={pack.pack_approved ? 'APPROVED' : 'PENDING'} />. Go to <Link to={`/runs/${runId}/review`}>Review &amp; approve</Link>.</Alert></div>}
-        <div className="grid g2">
-          {['ACTUAL', 'SYNTHETIC'].map(t => (
-            <div key={t} className="card card-b" style={{ padding: 12 }}>
-              <div className="row between"><b className="small">{t === 'ACTUAL' ? 'Track A · uploaded data' : 'Track B · synthetic edge cases'}</b>{latest[t] && <Badge s={latest[t].status} />}</div>
-              <div className="mt-s">{latest[t] ? (['QUEUED', 'RUNNING'].includes(latest[t].status)
-                ? <span className="small row gap-s"><Loader2 size={13} className="spin" />{latest[t].progress.done}/{latest[t].progress.total} tests</span>
-                : <ResultBar s={latest[t].summary} />) : <span className="small muted">Not run yet</span>}</div>
-            </div>))}
-        </div>
+          <div className="mb"><Alert kind="warn">Both approvals are needed first: transformation <Badge s={pack.transformation} /> and test pack <Badge s={pack.pack_approved ? 'APPROVED' : 'PENDING'} />. Approve the SQL in <Link to={`/runs/${runId}/studio`}>step 2</Link> and the test pack in <Link to={`/runs/${runId}/tests`}>step 3</Link>.</Alert></div>}
+        {latest.ACTUAL ? (['QUEUED', 'RUNNING'].includes(latest.ACTUAL.status)
+          ? <span className="small row gap-s"><Loader2 size={13} className="spin" />{latest.ACTUAL.progress.done}/{latest.ACTUAL.progress.total} tests</span>
+          : <div className="row gap-s"><Badge s={latest.ACTUAL.status} /><div className="grow"><ResultBar s={latest.ACTUAL.summary} /></div></div>)
+          : <span className="small muted">Not run yet</span>}
         <label className="row gap-s small mt"><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />Run again even if nothing changed (otherwise the previous identical results are reused)</label>
       </Card>
 
@@ -82,7 +79,7 @@ export default function Results() {
                       {r ? <button className="btn sm ghost" style={{ padding: 0 }} onClick={() => setOpen({ r, ex: execIds[t.id] })}><Badge s={st} /></button>
                         : st ? <span title={t.blocked_reason}><Badge s={st} /></span> : <span className="tiny muted">not run</span>}
                       <span>{t.title}</span>
-                      <span className="tiny muted">{t.track === 'ACTUAL' ? 'uploaded data' : 'synthetic'}</span>
+                      {t.validation?.scope && <span className="tag-edge" title={`Checked only on the records with ${t.validation.scope.desc}`}>edge case</span>}
                     </div>)
                 })}</td>
               </tr>)

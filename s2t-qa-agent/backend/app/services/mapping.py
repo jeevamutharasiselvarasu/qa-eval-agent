@@ -3,6 +3,7 @@
 Explicit Jira/attachment rules -> JIRA_EXPLICIT / ATTACHMENT_DERIVED mappings (ACCEPTED, still subject to bundle
 approval). Name/type similarity alone -> AI_INFERRED (PROPOSED, LOW confidence, must be confirmed).
 """
+
 from __future__ import annotations
 
 import re
@@ -13,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from ..core.common import audit
 from ..models import ColumnMapping, Dataset, Requirement, RequirementGap
-from .requirements import columns_in, normalize_expr
 from .transform.visual import sql_to_expr
 
 NUMERIC_HINT = ("int", "double", "decimal", "float")
@@ -32,8 +32,9 @@ def _family(t: str) -> str:
 
 class Ctx:
     def __init__(self, db: Session, run_id: str):
-        self.sources = list(db.scalars(select(Dataset).where(Dataset.run_id == run_id, Dataset.role == "SOURCE",
-                                                             Dataset.feeds_target.is_(True))))
+        self.sources = list(
+            db.scalars(select(Dataset).where(Dataset.run_id == run_id, Dataset.role == "SOURCE", Dataset.feeds_target.is_(True)))
+        )
         self.target = db.scalars(select(Dataset).where(Dataset.run_id == run_id, Dataset.role == "TARGET")).first()
         self.reqs = [r for r in db.scalars(select(Requirement).where(Requirement.run_id == run_id)) if r.status == "ACCEPTED"]
         self.gaps = list(db.scalars(select(RequirementGap).where(RequirementGap.run_id == run_id)))
@@ -107,7 +108,11 @@ def propose(db: Session, run_id: str, actor: str) -> list[ColumnMapping]:
     rule_targets = []
     for r in ctx.reqs:
         t = r.spec.get("target")
-        if t and r.kind in ("DERIVED_COLUMN", "DIRECT_MAPPING", "MAPPING_SPEC") and t.upper() not in [x.upper() for x in target_cols + rule_targets]:
+        if (
+            t
+            and r.kind in ("DERIVED_COLUMN", "DIRECT_MAPPING", "MAPPING_SPEC")
+            and t.upper() not in [x.upper() for x in target_cols + rule_targets]
+        ):
             rule_targets.append(t)
     all_targets = target_cols + rule_targets
     used_sources: set[str] = set()
@@ -120,12 +125,21 @@ def propose(db: Session, run_id: str, actor: str) -> list[ColumnMapping]:
 
     def gap_notes(cols: list[str]) -> list[str]:
         cu = {c.upper().split(".")[-1] for c in cols}
-        return [f"{g.id} ({g.status}): {g.description}" for g in ctx.gaps
-                if g.status in ("OPEN", "BLOCKED") and cu & {c.upper() for c in g.affected.get("columns", []) if c}]
+        return [
+            f"{g.id} ({g.status}): {g.description}"
+            for g in ctx.gaps
+            if g.status in ("OPEN", "BLOCKED") and cu & {c.upper() for c in g.affected.get("columns", []) if c}
+        ]
 
     for tgt in all_targets:
         T = tgt.upper()
-        ac = [r for r in ctx.reqs if r.kind in ("DERIVED_COLUMN", "DIRECT_MAPPING") and (r.spec.get("target") or "").upper() == T and r.provenance != "AI_INFERRED"]
+        ac = [
+            r
+            for r in ctx.reqs
+            if r.kind in ("DERIVED_COLUMN", "DIRECT_MAPPING")
+            and (r.spec.get("target") or "").upper() == T
+            and r.provenance != "AI_INFERRED"
+        ]
         att = [r for r in ctx.reqs if r.kind == "MAPPING_SPEC" and (r.spec.get("target") or "").upper() == T]
         notes: list[str] = []
         expr, srcs, mtype, prov, conf, status, evidence, req_ids = "", [], "", "", "HIGH", "ACCEPTED", [], []
@@ -155,8 +169,11 @@ def propose(db: Session, run_id: str, actor: str) -> list[ColumnMapping]:
             raw = a.spec.get("expression") or f"{a.spec['source_dataset']}.{a.spec['source_columns'][0]}"
             expr, srcs, notes = qualify_expression(raw, ctx, a.spec.get("source_dataset"))
             prov = "ATTACHMENT_DERIVED"
-        elif grp := [r for r in ctx.reqs if r.kind == "DERIVED_COLUMN" and r.provenance != "AI_INFERRED"
-                     and T in [g.upper() for g in r.spec.get("group_by", [])]]:
+        elif grp := [
+            r
+            for r in ctx.reqs
+            if r.kind == "DERIVED_COLUMN" and r.provenance != "AI_INFERRED" and T in [g.upper() for g in r.spec.get("group_by", [])]
+        ]:
             # grouping key named in a Jira rule ("... per SALE_DATE, PRODUCT_CODE") is an explicit target dimension;
             # take it from the dataset that the aggregated columns come from
             hint_alias = next((ctx.resolve(c)[0] for c in grp[0].spec.get("columns", []) if ctx.resolve(c)[0]), None)
@@ -169,9 +186,21 @@ def propose(db: Session, run_id: str, actor: str) -> list[ColumnMapping]:
                 srcs = [expr]
             else:
                 notes.append(note)
-                m = ColumnMapping(id=nid(), run_id=run_id, source_columns=[], target_column=tgt, mapping_type="UNMAPPED_TARGET",
-                                  expression="", requirement_ids=req_ids, evidence=" | ".join(evidence), provenance=prov,
-                                  confidence="MEDIUM", status="PROPOSED", is_key=T in key_cols, notes="; ".join(notes))
+                m = ColumnMapping(
+                    id=nid(),
+                    run_id=run_id,
+                    source_columns=[],
+                    target_column=tgt,
+                    mapping_type="UNMAPPED_TARGET",
+                    expression="",
+                    requirement_ids=req_ids,
+                    evidence=" | ".join(evidence),
+                    provenance=prov,
+                    confidence="MEDIUM",
+                    status="PROPOSED",
+                    is_key=T in key_cols,
+                    notes="; ".join(notes),
+                )
                 db.add(m)
                 out.append(m)
                 continue
@@ -188,10 +217,21 @@ def propose(db: Session, run_id: str, actor: str) -> list[ColumnMapping]:
             else:
                 if note:
                     notes.append(note)
-                m = ColumnMapping(id=nid(), run_id=run_id, source_columns=[], target_column=tgt, mapping_type="UNMAPPED_TARGET",
-                                  expression="", requirement_ids=[], evidence="No rule or matching source column found",
-                                  provenance="AI_INFERRED", confidence="LOW", status="PROPOSED", is_key=T in key_cols,
-                                  notes="; ".join(notes + ["Target column has no mapping rule; clarify in Jira."]))
+                m = ColumnMapping(
+                    id=nid(),
+                    run_id=run_id,
+                    source_columns=[],
+                    target_column=tgt,
+                    mapping_type="UNMAPPED_TARGET",
+                    expression="",
+                    requirement_ids=[],
+                    evidence="No rule or matching source column found",
+                    provenance="AI_INFERRED",
+                    confidence="LOW",
+                    status="PROPOSED",
+                    is_key=T in key_cols,
+                    notes="; ".join(notes + ["Target column has no mapping rule; clarify in Jira."]),
+                )
                 db.add(m)
                 out.append(m)
                 continue
@@ -225,22 +265,43 @@ def propose(db: Session, run_id: str, actor: str) -> list[ColumnMapping]:
             status, conf = "PROPOSED", "MEDIUM"
         notes += gap_notes(srcs + [tgt])
         used_sources.update(s.upper() for s in srcs)
-        m = ColumnMapping(id=nid(), run_id=run_id, source_columns=srcs, target_column=tgt, mapping_type=mtype,
-                          expression=expr, requirement_ids=req_ids, evidence=" | ".join(evidence) or "Name/type similarity",
-                          provenance=prov, confidence=conf, status=status, is_key=T in key_cols, notes="; ".join(notes))
+        m = ColumnMapping(
+            id=nid(),
+            run_id=run_id,
+            source_columns=srcs,
+            target_column=tgt,
+            mapping_type=mtype,
+            expression=expr,
+            requirement_ids=req_ids,
+            evidence=" | ".join(evidence) or "Name/type similarity",
+            provenance=prov,
+            confidence=conf,
+            status=status,
+            is_key=T in key_cols,
+            notes="; ".join(notes),
+        )
         db.add(m)
         out.append(m)
 
     for r in ctx.reqs:
         if r.kind == "JOIN":
-            l, rr = ctx.match_alias(r.spec.get("left")), ctx.match_alias(r.spec.get("right"))
+            left, rr = ctx.match_alias(r.spec.get("left")), ctx.match_alias(r.spec.get("right"))
             keys = r.spec.get("keys", [])
-            note = "" if (l and rr) else f"Could not match datasets '{r.spec.get('left')}'/'{r.spec.get('right')}' to uploaded sources"
-            m = ColumnMapping(id=nid(), run_id=run_id, source_columns=[f"{l}.{k}" for k in keys] + [f"{rr}.{k}" for k in keys],
-                              target_column=None, mapping_type="JOINED",
-                              expression=f"{r.spec.get('type')} JOIN {rr} ON " + " AND ".join(f"{l}.{k} = {rr}.{k}" for k in keys),
-                              requirement_ids=[r.id], evidence=f"{r.source_ref}: {r.evidence}", provenance=r.provenance,
-                              confidence="HIGH" if not note else "MEDIUM", status="ACCEPTED" if not note else "PROPOSED", notes=note)
+            note = "" if (left and rr) else f"Could not match datasets '{r.spec.get('left')}'/'{r.spec.get('right')}' to uploaded sources"
+            m = ColumnMapping(
+                id=nid(),
+                run_id=run_id,
+                source_columns=[f"{left}.{k}" for k in keys] + [f"{rr}.{k}" for k in keys],
+                target_column=None,
+                mapping_type="JOINED",
+                expression=f"{r.spec.get('type')} JOIN {rr} ON " + " AND ".join(f"{left}.{k} = {rr}.{k}" for k in keys),
+                requirement_ids=[r.id],
+                evidence=f"{r.source_ref}: {r.evidence}",
+                provenance=r.provenance,
+                confidence="HIGH" if not note else "MEDIUM",
+                status="ACCEPTED" if not note else "PROPOSED",
+                notes=note,
+            )
             used_sources.update(s.upper() for s in m.source_columns)
             db.add(m)
             out.append(m)
@@ -248,11 +309,20 @@ def propose(db: Session, run_id: str, actor: str) -> list[ColumnMapping]:
             alias, note = ctx.resolve(r.spec["column"], r.spec.get("dataset_hint"))
             val = r.spec["value"]
             lit = f"'{val}'" if isinstance(val, str) and not re.fullmatch(r"-?\d+(\.\d+)?", val) else str(val)
-            m = ColumnMapping(id=nid(), run_id=run_id, source_columns=[f"{alias}.{r.spec['column']}"] if alias else [],
-                              target_column=None, mapping_type="FILTERED",
-                              expression=f"{alias or '?'}.{r.spec['column']} {r.spec['op']} {lit}", requirement_ids=[r.id],
-                              evidence=f"{r.source_ref}: {r.evidence}", provenance=r.provenance, confidence="HIGH" if alias else "MEDIUM",
-                              status="ACCEPTED" if alias else "PROPOSED", notes=note)
+            m = ColumnMapping(
+                id=nid(),
+                run_id=run_id,
+                source_columns=[f"{alias}.{r.spec['column']}"] if alias else [],
+                target_column=None,
+                mapping_type="FILTERED",
+                expression=f"{alias or '?'}.{r.spec['column']} {r.spec['op']} {lit}",
+                requirement_ids=[r.id],
+                evidence=f"{r.source_ref}: {r.evidence}",
+                provenance=r.provenance,
+                confidence="HIGH" if alias else "MEDIUM",
+                status="ACCEPTED" if alias else "PROPOSED",
+                notes=note,
+            )
             used_sources.update(s.upper() for s in m.source_columns)
             db.add(m)
             out.append(m)
@@ -261,10 +331,20 @@ def propose(db: Session, run_id: str, actor: str) -> list[ColumnMapping]:
         for c in d.columns:
             ref = f"{d.alias}.{c['name']}"
             if ref.upper() not in used_sources:
-                m = ColumnMapping(id=nid(), run_id=run_id, source_columns=[ref], target_column=None, mapping_type="UNMAPPED_SOURCE",
-                                  expression="", requirement_ids=[], evidence="Not referenced by any rule",
-                                  provenance="DETERMINISTIC_CHECK", confidence="HIGH", status="ACCEPTED",
-                                  notes="Source column not used by the target (informational).")
+                m = ColumnMapping(
+                    id=nid(),
+                    run_id=run_id,
+                    source_columns=[ref],
+                    target_column=None,
+                    mapping_type="UNMAPPED_SOURCE",
+                    expression="",
+                    requirement_ids=[],
+                    evidence="Not referenced by any rule",
+                    provenance="DETERMINISTIC_CHECK",
+                    confidence="HIGH",
+                    status="ACCEPTED",
+                    notes="Source column not used by the target (informational).",
+                )
                 db.add(m)
                 out.append(m)
     audit(db, actor, "MAPPINGS_GENERATED", run_id, "QA_RUN", run_id, count=len(out))
@@ -313,8 +393,10 @@ def draft_visual_spec(db: Session, run_id: str) -> tuple[dict, list[str]]:
         if src is not None:
             src["filters"].append(cond)
             if a in right_of_left:
-                assumptions.append(f"Filter {f.expression} ({', '.join(f.requirement_ids)}) is applied to '{a}' BEFORE the "
-                                   f"LEFT JOIN so unmatched base records are retained.")
+                assumptions.append(
+                    f"Filter {f.expression} ({', '.join(f.requirement_ids)}) is applied to '{a}' BEFORE the "
+                    f"LEFT JOIN so unmatched base records are retained."
+                )
         else:
             post_filters.append(cond)
     target_order = [c["name"].upper() for c in (ctx.target.columns if ctx.target else [])]

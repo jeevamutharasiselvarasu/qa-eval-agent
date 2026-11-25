@@ -4,6 +4,7 @@ Deterministic, evidence-quoting extraction of typed rules from Jira content (pro
 ATTACHMENT_DERIVED), deterministic gap detection, and an optional AI pass whose output is stored only as
 AI_INFERRED proposals. Nothing is invented: every rule keeps its exact source sentence.
 """
+
 from __future__ import annotations
 
 import csv
@@ -58,6 +59,7 @@ class AnalysisResult:
 
 
 # ------------------------------------------------------------------ helpers
+
 
 def _sentences(text: str) -> list[str]:
     parts = re.split(r"(?<=[.?!])\s+(?=[A-Z])", text.strip())
@@ -118,6 +120,7 @@ def detect_injection(text: str) -> bool:
 
 # ------------------------------------------------------------------ extraction
 
+
 def collect_units(doc: dict) -> tuple[list[TextUnit], list[TextUnit], list[dict]]:
     """Return (acceptance-criterion units, other description/custom-field units, comments)."""
     acs: list[TextUnit] = []
@@ -138,13 +141,13 @@ def collect_units(doc: dict) -> tuple[list[TextUnit], list[TextUnit], list[dict]
             continue
         if in_ac and re.match(r"^([-*•]|\d+[.)])\s+", line):
             n_auto += 1
-            acs.append(TextUnit(f"description:AC-item-{n_auto}", re.sub(r"^([-*•]|\d+[.)])\s+", "", line), f"AC{len(acs)+1}"))
+            acs.append(TextUnit(f"description:AC-item-{n_auto}", re.sub(r"^([-*•]|\d+[.)])\s+", "", line), f"AC{len(acs) + 1}"))
             continue
         if in_ac and re.match(r"^[A-Z][A-Za-z ]{2,40}$", line):  # next heading
             in_ac = False
         other.append(TextUnit("description", line))
     for name, val in (doc.get("custom_fields") or {}).items():
-        for i, line in enumerate([l.strip(" -*\t") for l in str(val).splitlines() if l.strip()], 1):
+        for i, line in enumerate([ln.strip(" -*\t") for ln in str(val).splitlines() if ln.strip()], 1):
             if "acceptance" in name.lower():
                 acs.append(TextUnit(f"custom_field:{name}#{i}", line, f"AC-CF{i}"))
             else:
@@ -157,12 +160,15 @@ def extract_rules(unit: TextUnit, provenance: str = "JIRA_EXPLICIT") -> list[Ext
     for sent in _sentences(unit.text):
         s = sent.rstrip(".")
 
-        def add(kind, desc, spec, conf="HIGH"):
+        def add(kind, desc, spec, conf="HIGH", sent=sent):
             out.append(Extracted(kind, desc, spec, provenance, unit.ref, sent, unit.ac_id, conf))
 
         KEYLIST = rf"{IDENT}(?:\s*(?:,|\+|\band\b)\s*{IDENT})*"
-        m = (re.search(rf"\b({KEYLIST})\s+(?:together\s+)?(?:is|are|form|forms|make up|makes up)\s+the\s+(?:composite\s+)?(?:business|primary|natural)\s+key", s)
-             or re.search(rf"\b(?:business|primary|natural|composite)\s+key\b(?:\s+of\s+\w+)?\s+(?:is|are|=)\s+({KEYLIST})", s))
+        m = re.search(
+            rf"\b({KEYLIST})\s+(?:together\s+)?(?:is|are|form|forms|make up|makes up)\s+the\s+"
+            r"(?:(?:composite\s+)?(?:business|primary|natural)\s+key|composite\s+key)",
+            s,
+        ) or re.search(rf"\b(?:business|primary|natural|composite)\s+key\b(?:\s+of\s+\w+)?\s+(?:is|are|=)\s+({KEYLIST})", s)
         if m:
             cols = re.findall(IDENT, m.group(1))
             add("BUSINESS_KEY", f"{' + '.join(cols)} {'is' if len(cols) == 1 else 'form'} the business key", {"columns": cols})
@@ -174,27 +180,39 @@ def extract_rules(unit: TextUnit, provenance: str = "JIRA_EXPLICIT") -> list[Ext
 
         m = re.search(rf"^({IDENT}) is copied (?:as-is|directly) from (\w+)\.({IDENT})", s)
         if m:
-            add("DIRECT_MAPPING", f"{m.group(1)} copied as-is from {m.group(2)}.{m.group(3)}",
-                {"target": m.group(1), "source_dataset": m.group(2), "source_column": m.group(3)})
+            add(
+                "DIRECT_MAPPING",
+                f"{m.group(1)} copied as-is from {m.group(2)}.{m.group(3)}",
+                {"target": m.group(1), "source_dataset": m.group(2), "source_column": m.group(3)},
+            )
 
         m = re.search(rf"Only ([A-Za-z_][\w ]*?) with ({IDENT})\s*(=|!=|<>|>=|<=|>|<)\s*('[^']*'|[\w.]+) (?:are|is) included", s)
         if m:
             val = m.group(4).strip("'") if m.group(4).startswith("'") else m.group(4)
-            add("FILTER", f"Only {m.group(1)} with {m.group(2)} {m.group(3)} {m.group(4)} are included",
-                {"dataset_hint": m.group(1), "column": m.group(2), "op": m.group(3), "value": val})
+            add(
+                "FILTER",
+                f"Only {m.group(1)} with {m.group(2)} {m.group(3)} {m.group(4)} are included",
+                {"dataset_hint": m.group(1), "column": m.group(2), "op": m.group(3), "value": val},
+            )
 
         m = re.search(rf"(LEFT|RIGHT|INNER|FULL(?: OUTER)?) JOIN (\w+) to (\w+) on ({IDENT}(?:\s*(?:,|and)\s*{IDENT})*)", s, re.I)
         if m:
             keys = re.findall(IDENT, m.group(4))
-            add("JOIN", f"{m.group(1).upper()} JOIN {m.group(2)} to {m.group(3)} on {', '.join(keys)}",
-                {"type": m.group(1).upper().replace(" OUTER", ""), "left": m.group(2), "right": m.group(3), "keys": keys})
+            add(
+                "JOIN",
+                f"{m.group(1).upper()} JOIN {m.group(2)} to {m.group(3)} on {', '.join(keys)}",
+                {"type": m.group(1).upper().replace(" OUTER", ""), "left": m.group(2), "right": m.group(3), "keys": keys},
+            )
 
         m = re.search(r"without .*? get (.+)$", s)
         if m:
             defaults = {k: _num(v) for k, v in re.findall(rf"({IDENT})\s*=\s*('[^']*'|-?\d+(?:\.\d+)?)", m.group(1))}
             if defaults:
-                add("DEFAULT_WHEN_UNMATCHED", "Defaults for records without matches: " +
-                    ", ".join(f"{k} = {v}" for k, v in defaults.items()), {"defaults": defaults})
+                add(
+                    "DEFAULT_WHEN_UNMATCHED",
+                    "Defaults for records without matches: " + ", ".join(f"{k} = {v}" for k, v in defaults.items()),
+                    {"defaults": defaults},
+                )
             continue  # don't also read "X = 0" as a derived column
 
         m = re.search(rf"\b({IDENT})\s*=\s*(.+)$", s)
@@ -215,8 +233,13 @@ def extract_rules(unit: TextUnit, provenance: str = "JIRA_EXPLICIT") -> list[Ext
                     spec["parsed"] = True
                 except Exception:  # noqa: BLE001
                     spec["parsed"] = False
-                add("DERIVED_COLUMN", f"{target} = {expr}" + (f" per {', '.join(spec['group_by'])}" if "group_by" in spec else "")
-                    + (f", rounded to {spec['precision']} decimals" if "precision" in spec else ""), spec)
+                add(
+                    "DERIVED_COLUMN",
+                    f"{target} = {expr}"
+                    + (f" per {', '.join(spec['group_by'])}" if "group_by" in spec else "")
+                    + (f", rounded to {spec['precision']} decimals" if "precision" in spec else ""),
+                    spec,
+                )
 
         m = re.search(r"Rounding is (half[- ]up|half[- ]even|banker'?s|truncat\w*)", s, re.I)
         if m:
@@ -252,8 +275,16 @@ def extract_attachment_mappings(att: dict) -> list[Extracted]:
         if rule.lower() not in ("direct", "rename", ""):
             spec["expression"] = rule
             spec["columns"] = columns_in(rule)
-        out.append(Extracted("MAPPING_SPEC", f"{ds}.{'|'.join(src_cols)} -> {tgt}: {rule}", spec, "ATTACHMENT_DERIVED",
-                             f"attachment:{att['filename']}#row{i}", ",".join(r.get(c, "") or "" for c in rows[0].keys())))
+        out.append(
+            Extracted(
+                "MAPPING_SPEC",
+                f"{ds}.{'|'.join(src_cols)} -> {tgt}: {rule}",
+                spec,
+                "ATTACHMENT_DERIVED",
+                f"attachment:{att['filename']}#row{i}",
+                ",".join(r.get(c, "") or "" for c in rows[0].keys()),
+            )
+        )
     return out
 
 
@@ -270,11 +301,17 @@ def analyze(doc: dict) -> AnalysisResult:
         res.requirements.extend(rules)
         if not rules:
             cols = sorted(set(re.findall(rf"\b{IDENT}\b", unit.text)))
-            res.gaps.append({"id": _gap_id("UNPARSED", unit.ref), "gap_type": "UNPARSED_RULE",
-                             "description": f"{unit.ac_id} could not be converted into a testable rule: \"{unit.text[:200]}\"",
-                             "detail": "Add a structured requirement, reword the criterion in Jira, or accept it as a limitation. "
-                                       "Column checks that depend on these columns are blocked until then.",
-                             "affected": {"columns": cols, "topic": "UNPARSED_RULE"}, "evidence": unit.ref})
+            res.gaps.append(
+                {
+                    "id": _gap_id("UNPARSED", unit.ref),
+                    "gap_type": "UNPARSED_RULE",
+                    "description": f'{unit.ac_id} could not be converted into a testable rule: "{unit.text[:200]}"',
+                    "detail": "Add a structured requirement, reword the criterion in Jira, or accept it as a limitation. "
+                    "Column checks that depend on these columns are blocked until then.",
+                    "affected": {"columns": cols, "topic": "UNPARSED_RULE"},
+                    "evidence": unit.ref,
+                }
+            )
     for unit in other:
         if not detect_injection(unit.text):
             res.requirements.extend(extract_rules(unit))
@@ -291,15 +328,29 @@ def analyze(doc: dict) -> AnalysisResult:
         for q in [s for s in re.split(r"(?<=\?)\s*", body) if s.strip().endswith("?")]:
             q = q.strip()
             cols = sorted(set(re.findall(rf"\b{IDENT}\b", q)))
-            topic = ("NULL_HANDLING" if re.search(r"\bnull", q, re.I) else
-                     "NEGATIVE_VALUES" if re.search(r"negative", q, re.I) else
-                     "JOIN_TYPE" if re.search(r"\bjoin", q, re.I) else
-                     "PRECISION" if re.search(r"round|precision|decimal", q, re.I) else
-                     "DUPLICATES" if re.search(r"duplicate", q, re.I) else "AMBIGUOUS")
-            res.gaps.append({"id": _gap_id("QUESTION", ref, q), "gap_type": topic,
-                             "description": f"Unanswered question in Jira: {q}",
-                             "detail": "Behaviour is not specified in the description or acceptance criteria.",
-                             "affected": {"columns": cols, "topic": topic}, "evidence": f"{ref}: {q}"})
+            topic = (
+                "NULL_HANDLING"
+                if re.search(r"\bnull", q, re.I)
+                else "NEGATIVE_VALUES"
+                if re.search(r"negative", q, re.I)
+                else "JOIN_TYPE"
+                if re.search(r"\bjoin", q, re.I)
+                else "PRECISION"
+                if re.search(r"round|precision|decimal", q, re.I)
+                else "DUPLICATES"
+                if re.search(r"duplicate", q, re.I)
+                else "AMBIGUOUS"
+            )
+            res.gaps.append(
+                {
+                    "id": _gap_id("QUESTION", ref, q),
+                    "gap_type": topic,
+                    "description": f"Unanswered question in Jira: {q}",
+                    "detail": "Behaviour is not specified in the description or acceptance criteria.",
+                    "affected": {"columns": cols, "topic": topic},
+                    "evidence": f"{ref}: {q}",
+                }
+            )
 
     for att in doc.get("attachments") or []:
         if att.get("content") and detect_injection(att["content"]):
@@ -315,18 +366,30 @@ def analyze(doc: dict) -> AnalysisResult:
 def _structural_gaps(res: AnalysisResult) -> None:
     kinds = {r.kind for r in res.requirements}
     if not ({"BUSINESS_KEY", "UNIQUE_KEY"} & kinds):
-        res.gaps.append({"id": _gap_id("NO_KEY"), "gap_type": "NO_BUSINESS_KEY",
-                         "description": "No business key identified in Jira.",
-                         "detail": "Record-level reconciliation needs an approved key; it is BLOCKED until one is confirmed.",
-                         "affected": {"columns": [], "topic": "NO_BUSINESS_KEY"}, "evidence": "No 'business key'/'unique' rule found"})
+        res.gaps.append(
+            {
+                "id": _gap_id("NO_KEY"),
+                "gap_type": "NO_BUSINESS_KEY",
+                "description": "No business key identified in Jira.",
+                "detail": "Record-level reconciliation needs an approved key; it is BLOCKED until one is confirmed.",
+                "affected": {"columns": [], "topic": "NO_BUSINESS_KEY"},
+                "evidence": "No 'business key'/'unique' rule found",
+            }
+        )
     derived = [r for r in res.requirements if r.kind == "DERIVED_COLUMN"]
     for d in derived:
         expr = d.spec.get("expression", "")
         if re.search(r"[-+*/]", expr) and "precision" not in d.spec and "ROUND" not in expr.upper():
-            res.gaps.append({"id": _gap_id("PRECISION", d.spec["target"]), "gap_type": "PRECISION",
-                             "description": f"Rounding precision for {d.spec['target']} is not defined.",
-                             "detail": "Comparison tolerance cannot be derived from requirements.",
-                             "affected": {"columns": [d.spec["target"]], "topic": "PRECISION"}, "evidence": d.evidence})
+            res.gaps.append(
+                {
+                    "id": _gap_id("PRECISION", d.spec["target"]),
+                    "gap_type": "PRECISION",
+                    "description": f"Rounding precision for {d.spec['target']} is not defined.",
+                    "detail": "Comparison tolerance cannot be derived from requirements.",
+                    "affected": {"columns": [d.spec["target"]], "topic": "PRECISION"},
+                    "evidence": d.evidence,
+                }
+            )
     # conflict detection between AC expressions and attachment mapping rules
     ac_expr = {}
     for d in derived:
@@ -337,20 +400,33 @@ def _structural_gaps(res: AnalysisResult) -> None:
     for m in [r for r in res.requirements if r.kind == "MAPPING_SPEC" and "expression" in r.spec]:
         t = m.spec["target"]
         if t in ac_expr and normalize_expr(m.spec["expression"]) != ac_expr[t][0]:
-            res.gaps.append({"id": _gap_id("CONFLICT", t), "gap_type": "CONFLICT",
-                             "description": f"Conflicting rules for {t}: '{ac_expr[t][1].spec['expression']}' (Jira) vs "
-                                            f"'{m.spec['expression']}' ({m.ref}).",
-                             "detail": "Confirm which rule is authoritative.", "affected": {"columns": [t], "topic": "CONFLICT"},
-                             "evidence": f"{ac_expr[t][1].ref} vs {m.ref}"})
+            res.gaps.append(
+                {
+                    "id": _gap_id("CONFLICT", t),
+                    "gap_type": "CONFLICT",
+                    "description": f"Conflicting rules for {t}: '{ac_expr[t][1].spec['expression']}' (Jira) vs "
+                    f"'{m.spec['expression']}' ({m.ref}).",
+                    "detail": "Confirm which rule is authoritative.",
+                    "affected": {"columns": [t], "topic": "CONFLICT"},
+                    "evidence": f"{ac_expr[t][1].ref} vs {m.ref}",
+                }
+            )
     datasets = {r.spec.get("source_dataset") for r in res.requirements if r.kind == "MAPPING_SPEC"} - {None, ""}
     if len(datasets) > 1 and "JOIN" not in kinds:
-        res.gaps.append({"id": _gap_id("JOIN_TYPE"), "gap_type": "JOIN_TYPE",
-                         "description": f"Multiple sources ({', '.join(sorted(datasets))}) but no join rule is stated.",
-                         "detail": "Join type and keys must be confirmed.", "affected": {"columns": [], "topic": "JOIN_TYPE"},
-                         "evidence": "No JOIN statement found"})
+        res.gaps.append(
+            {
+                "id": _gap_id("JOIN_TYPE"),
+                "gap_type": "JOIN_TYPE",
+                "description": f"Multiple sources ({', '.join(sorted(datasets))}) but no join rule is stated.",
+                "detail": "Join type and keys must be confirmed.",
+                "affected": {"columns": [], "topic": "JOIN_TYPE"},
+                "evidence": "No JOIN statement found",
+            }
+        )
 
 
 # ------------------------------------------------------------------ persistence
+
 
 def persist_analysis(db: Session, run_id: str, doc: dict, actor: str, use_ai: bool = True) -> AnalysisResult:
     res = analyze(doc)
@@ -368,29 +444,71 @@ def persist_analysis(db: Session, run_id: str, doc: dict, actor: str, use_ai: bo
         while f"REQ-{n:03d}" in existing_ids:
             n += 1
         return f"REQ-{n:03d}"
+
     for e in res.requirements:
         rid = next_id()
-        db.add(Requirement(id=rid, run_id=run_id, ac_id=e.ac_id, kind=e.kind, description=e.description, spec=e.spec,
-                           provenance=e.provenance, confidence=e.confidence, source_ref=e.ref, evidence=e.evidence,
-                           status=e.status))
+        db.add(
+            Requirement(
+                id=rid,
+                run_id=run_id,
+                ac_id=e.ac_id,
+                kind=e.kind,
+                description=e.description,
+                spec=e.spec,
+                provenance=e.provenance,
+                confidence=e.confidence,
+                source_ref=e.ref,
+                evidence=e.evidence,
+                status=e.status,
+            )
+        )
 
     if use_ai:
         llm = get_llm()
-        text = "\n".join([doc.get("summary", ""), doc.get("description", "")] +
-                         [c.get("body", "") for c in doc.get("comments", []) if not detect_injection(c.get("body", ""))])
+        text = "\n".join(
+            [doc.get("summary", ""), doc.get("description", "")]
+            + [c.get("body", "") for c in doc.get("comments", []) if not detect_injection(c.get("body", ""))]
+        )
         out, ms, err = timed(llm.propose_rules, text)
-        db.add(LLMCall(run_id=run_id, purpose="REQUIREMENT_PROPOSALS", provider=llm.name, sent_data_samples=False,
-                       ok=err is None, latency_ms=ms, error=err))
+        db.add(
+            LLMCall(
+                run_id=run_id,
+                purpose="REQUIREMENT_PROPOSALS",
+                provider=llm.name,
+                sent_data_samples=False,
+                ok=err is None,
+                latency_ms=ms,
+                error=err,
+            )
+        )
         if out:
             for pr in out.rules:
-                db.add(Requirement(id=next_id(), run_id=run_id, kind=pr.kind, description=pr.description,
-                                   spec={"target": pr.target_column} if pr.target_column else {},
-                                   provenance="AI_INFERRED", confidence=pr.confidence, source_ref=f"ai:{llm.name}",
-                                   evidence=pr.evidence_quote, status="PROPOSED"))
+                db.add(
+                    Requirement(
+                        id=next_id(),
+                        run_id=run_id,
+                        kind=pr.kind,
+                        description=pr.description,
+                        spec={"target": pr.target_column} if pr.target_column else {},
+                        provenance="AI_INFERRED",
+                        confidence=pr.confidence,
+                        source_ref=f"ai:{llm.name}",
+                        evidence=pr.evidence_quote,
+                        status="PROPOSED",
+                    )
+                )
             for g in out.gaps:
-                res.gaps.append({"id": _gap_id("AI", g), "gap_type": "AMBIGUOUS", "description": g,
-                                 "detail": "Raised by AI review; confirm or dismiss.", "affected": {"columns": re.findall(IDENT, g)},
-                                 "evidence": f"ai:{llm.name}", "provenance": "AI_INFERRED"})
+                res.gaps.append(
+                    {
+                        "id": _gap_id("AI", g),
+                        "gap_type": "AMBIGUOUS",
+                        "description": g,
+                        "detail": "Raised by AI review; confirm or dismiss.",
+                        "affected": {"columns": re.findall(IDENT, g)},
+                        "evidence": f"ai:{llm.name}",
+                        "provenance": "AI_INFERRED",
+                    }
+                )
         elif err:
             res.warnings.append(f"AI requirement review unavailable: {err[:200]}")
 
@@ -399,14 +517,32 @@ def persist_analysis(db: Session, run_id: str, doc: dict, actor: str, use_ai: bo
         if prev:
             prev.description, prev.detail, prev.affected, prev.evidence = g["description"], g["detail"], g["affected"], g["evidence"]
         else:
-            db.add(RequirementGap(id=g["id"], run_id=run_id, description=g["description"], detail=g["detail"],
-                                  gap_type=g["gap_type"], affected=g["affected"], evidence=g["evidence"],
-                                  provenance=g.get("provenance", "DETERMINISTIC_CHECK")))
+            db.add(
+                RequirementGap(
+                    id=g["id"],
+                    run_id=run_id,
+                    description=g["description"],
+                    detail=g["detail"],
+                    gap_type=g["gap_type"],
+                    affected=g["affected"],
+                    evidence=g["evidence"],
+                    provenance=g.get("provenance", "DETERMINISTIC_CHECK"),
+                )
+            )
     for stale in old_gaps.values():  # gap no longer detected
         if stale.provenance != "PROFILE_CHECK" and stale.status == "OPEN":
             db.delete(stale)
-    audit(db, actor, "REQUIREMENTS_ANALYZED", run_id, "QA_RUN", run_id, requirements=len(res.requirements),
-          gaps=len(res.gaps), warnings=res.warnings)
+    audit(
+        db,
+        actor,
+        "REQUIREMENTS_ANALYZED",
+        run_id,
+        "QA_RUN",
+        run_id,
+        requirements=len(res.requirements),
+        gaps=len(res.gaps),
+        warnings=res.warnings,
+    )
     return res
 
 
@@ -425,8 +561,9 @@ def profile_gaps(db: Session, run_id: str, profiles: dict[str, dict], alias_map:
                 if not c or not c.get("null_count"):
                     continue
                 ev = f"profile:{alias}.{c['name']} has {c['null_count']} null(s)"
-                existing = next((g for g in gaps if g.affected.get("topic") == "NULL_HANDLING"
-                                 and col in g.affected.get("columns", [])), None)
+                existing = next(
+                    (g for g in gaps if g.affected.get("topic") == "NULL_HANDLING" and col in g.affected.get("columns", [])), None
+                )
                 if existing:
                     if ev not in existing.evidence:
                         existing.evidence = existing.evidence + " | " + ev
@@ -437,12 +574,21 @@ def profile_gaps(db: Session, run_id: str, profiles: dict[str, dict], alias_map:
                 gid = _gap_id("PROFILE_NULL", alias, col)
                 if any(g.id == gid for g in gaps):
                     continue
-                g = RequirementGap(id=gid, run_id=run_id, gap_type="NULL_HANDLING", provenance="PROFILE_CHECK",
-                                   description=f"Null handling for {col} is not specified, and the uploaded data contains nulls.",
-                                   detail=f"Affects {r.spec.get('target')} ({r.id}).",
-                                   affected={"columns": [col, r.spec.get("target")], "topic": "NULL_HANDLING",
-                                             "requirements": [r.id], "actual_data_nulls": [f"{alias}.{c['name']}"]},
-                                   evidence=ev)
+                g = RequirementGap(
+                    id=gid,
+                    run_id=run_id,
+                    gap_type="NULL_HANDLING",
+                    provenance="PROFILE_CHECK",
+                    description=f"Null handling for {col} is not specified, and the uploaded data contains nulls.",
+                    detail=f"Affects {r.spec.get('target')} ({r.id}).",
+                    affected={
+                        "columns": [col, r.spec.get("target")],
+                        "topic": "NULL_HANDLING",
+                        "requirements": [r.id],
+                        "actual_data_nulls": [f"{alias}.{c['name']}"],
+                    },
+                    evidence=ev,
+                )
                 db.add(g)
                 gaps.append(g)
                 created.append(gid)

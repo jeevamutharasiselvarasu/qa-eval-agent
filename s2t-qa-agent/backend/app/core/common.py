@@ -1,11 +1,13 @@
 """Shared helpers: hashing, run storage, masking, audit and workflow state."""
+
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -98,16 +100,23 @@ def mask_records(records: Iterable[dict]) -> list[dict]:
 # ---------------------------------------------------------------- audit
 
 
-def audit(db: Session, actor: str, action: str, run_id: str | None = None, entity_type: str = "",
-          entity_id: str = "", **details: Any) -> None:
-    db.add(AuditLog(run_id=run_id, actor=actor, action=action, entity_type=entity_type,
-                    entity_id=str(entity_id), details=json.loads(stable_json(details))))
+def audit(
+    db: Session, actor: str, action: str, run_id: str | None = None, entity_type: str = "", entity_id: str = "", **details: Any
+) -> None:
+    db.add(
+        AuditLog(
+            run_id=run_id,
+            actor=actor,
+            action=action,
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            details=json.loads(stable_json(details)),
+        )
+    )
 
 
-def record_error(db: Session, run_id: str, stage: str, message: str, detail: str = "",
-                 execution_id: str | None = None) -> None:
-    db.add(ErrorDetail(run_id=run_id, stage=stage, message=message[:2000], detail=detail[:20000],
-                       execution_id=execution_id))
+def record_error(db: Session, run_id: str, stage: str, message: str, detail: str = "", execution_id: str | None = None) -> None:
+    db.add(ErrorDetail(run_id=run_id, stage=stage, message=message[:2000], detail=detail[:20000], execution_id=execution_id))
 
 
 # ---------------------------------------------------------------- workflow states

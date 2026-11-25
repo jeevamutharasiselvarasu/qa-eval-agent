@@ -5,3 +5,7 @@ var/
 __pycache__/
 *.pyc
 .pytest_cache/
+frontend/coverage/
+backend/htmlcov/
+.coverage
+.ruff_cache/

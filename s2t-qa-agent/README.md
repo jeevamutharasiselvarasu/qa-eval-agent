@@ -2,7 +2,7 @@
 
 This web app validates data pipelines. It reads requirements from a Jira ticket and lets you upload source and
 target datasets. It then builds the expected target from approved transformation logic (SQL, Python or a visual
-builder) and runs deterministic checks. It also generates synthetic test data and produces Excel, HTML, JSON and
+builder) and runs deterministic checks, including edge-case checks on the uploaded records, and produces Excel, HTML, JSON and
 Power BI reports.
 
 > This is a working **prototype**, not production software. For how it works internally and what is and isn't
@@ -105,8 +105,12 @@ Run `npm run build` again after you change any frontend code.
 
 1. Click **New QA run**. Enter Jira key **`DATA-1234`** (a built-in sample ticket) and click **Check**.
    Upload `sample_data/customers.csv` and `sample_data/transactions.csv` as sources and
-   `sample_data/customer_master_target.csv` as the target, then click **Create run**.
-2. The run opens on **Requirements**. This tab lists every **target column**: which source column(s) it comes from
+   `sample_data/customer_master_target.csv` as the target, then click **Create run**. The run opens on step 1.
+
+The run is a straight flow of four numbered steps. Each step has a **Next** button that turns on once the step is
+done. You only go back to change something. The **Data files** and **Audit** tabs are for reference.
+
+**Step 1 · Requirements.** This tab lists every **target column**: which source column(s) it comes from
    and the rule that builds it. It also shows the **table rules** (business key, join, row filter, value when a record
    has no match) and any **questions** found in the ticket.
    * If everything is clear, the SQL query and the test pack are generated straight away.
@@ -118,8 +122,11 @@ Run `npm run build` again after you change any frontend code.
    * **Accept as limitation** lets the SQL be generated, but tests that depend on that question stay BLOCKED.
    * Once nothing is open, the SQL is generated from the requirements and the test pack is built.
    * Your edits are kept if you re-retrieve the ticket from Jira.
-3. **Transformation (SQL)** shows the generated query; you can still edit it by hand.
-   **Test cases** shows the test pack in three groups:
+   Click **Next: SQL**.
+
+**Step 2 · SQL.** Review the generated query; you can still edit it by hand. Click **Approve SQL** (approval 1), then **Next: Test cases**.
+
+**Step 3 · Test cases.** This step shows the test pack in three groups:
    * **Acceptance criteria:** one group per criterion, with positive, negative and edge cases.
    * **Transformation logic:** checks derived from the SQL itself. UPPER/TRIM mean the target must be upper-case
      with no surrounding spaces, ROUND(x, 2) means at most 2 decimals, COALESCE means never null, and CASE means only
@@ -127,23 +134,31 @@ Run `npm run build` again after you change any frontend code.
      records, and GROUP BY means one row per group.
    * **General:** reconciliation and data-quality checks.
 
-   Each test runs on either the uploaded data or a synthetic edge-case dataset (click its name to see the rows).
-4. **Review & approve** has just two decisions: **Approval 1, the SQL transformation** and **Approval 2, the test pack**.
-   The test pack covers requirements, data, target column rules, tests, synthetic data and settings. Changing any of these
-   later marks the approval out of date.
-5. Choose which tests to run with the checkboxes, per test or per group, or with **Select all** and **Select none**.
-   Then click **Run selected and create report**. Only the selected tests run, and the report covers exactly those
-   tests, stating "N of M test cases run". Choosing tests does not need a new approval, and a rebuilt pack keeps your
-   choice. Results and report downloads (Excel, HTML, JSON, Power BI) are on the **Results** tab.
+   Every test checks the uploaded target (the developer's output) against the expected target that the approved SQL
+   builds from the uploaded sources. The **Records checked** column shows what each test looks at. Positive cases use
+   the whole target. Negative and edge cases use only the records in the uploaded data that hit that situation, such
+   as no matching transaction, several matches, rows the filter excludes, null, zero or negative inputs, values with
+   more decimals than the result, or unusual text. If the data has no such records, the test is **SKIPPED (not in
+   this data)**, never passed.
+
+   Choose which tests to run with the checkboxes, per test or per group, or with **Select all** and **Select none**.
+   Then click **Approve test pack and run selected** (approval 2 and the run in one step). Approving covers the whole
+   pack. Later you can change the selection and click **Run selected** without approving again. A rebuilt pack keeps
+   your choice.
+
+**Step 4 · Results & report.** Only the selected tests run, and the report covers exactly those tests, stating
+"N of M test cases run". Download it as Excel, HTML, JSON or Power BI. The HTML report opens with a verdict, key
+figures and a contents list; use its **Print / save as PDF** button for a PDF. The Excel workbook has a summary sheet
+and one formatted table per section. The approval history is on the **Audit** tab.
 
 The sample target contains four deliberate errors, and the run should find all of them: C102 net amount −100,
 C105 name not trimmed or upper-cased, C108 missing, and C999 extra.
 
-**How the synthetic edge cases catch bugs.** For each rule, the app generates small datasets: null keys,
-duplicates, one-to-many joins, rows with no match, an empty lookup, filter boundaries, zero values, rounding and
-special characters. It then checks the approved transformation against an independent "rule oracle" built from the
-mapping rules. As a result, a transformation that forgets a TRIM, ignores a discount or filters after a LEFT JOIN
-fails its synthetic tests even if the uploaded target happens to look right.
+**Why edge cases are checked on the uploaded records.** Testing the app's own SQL on generated data would only show
+that the SQL agrees with the requirements it was built from. Edge-case checks on the uploaded records test the
+developer's real output exactly where bugs usually hide. If the developer's pipeline forgets a TRIM, ignores the
+discount or filters after the LEFT JOIN, the matching edge-case tests fail. To cover a situation your sample data
+doesn't contain, add such records to the source extract and the developer's target.
 
 A second sample uses Jira key **`SALES-77`** with the files in `sample_data/sales/`. Upload `order_lines.json`
 (alias `order_lines`) and `products.xlsx` (alias `products`) as sources and `daily_sales.csv` as the target.
@@ -212,13 +227,27 @@ To check whether a port is free on Windows, run `netstat -ano | findstr :18080`.
 
 ## 6. Run the tests
 
+**Backend (pytest).** Unit tests cover single functions (checks, SQL analysis, edge-case scoping, report rendering,
+security helpers); integration tests drive the API end to end. Jira and the AI are mocked, so no credentials or
+internet access are needed.
 ```bat
 cd backend
-.\.venv\Scripts\python -m pytest -q
+.\.venv\Scripts\python -m pytest -q                      :: everything: 232 passed
+.\.venv\Scripts\python -m pytest tests\unit -q           :: unit tests only (about 20 s)
+.\.venv\Scripts\python -m pytest tests\integration -q    :: API end-to-end tests
+.\.venv\Scripts\python -m pytest --cov=app --cov-report=html   :: coverage (about 87%), opens in htmlcov\index.html
+.\.venv\Scripts\ruff check . ^&^& .\.venv\Scripts\ruff format --check .   :: lint and formatting
 ```
-(On macOS/Linux, use `.venv/bin/python -m pytest -q`.) The result should be **119 passed**. Jira and the AI are mocked,
-so no credentials or internet access are needed. In VS Code, you can also use the **Testing** panel (beaker icon) or
-**Run Task… → Run tests**.
+(On macOS/Linux, use `.venv/bin/python -m pytest -q`.) In VS Code, you can also use the **Testing** panel (beaker
+icon) or **Run Task… → Run tests**.
+
+**Frontend (Vitest + Testing Library).** Component tests for the step bar, Requirements, Test cases and shared UI.
+```bat
+cd frontend
+npm test              :: 35 passed
+npm run coverage      :: coverage report in coverage\index.html
+npm run lint          :: ESLint
+```
 
 To run the suite against PostgreSQL instead of SQLite, point it at an **empty test database**. Its tables are cleared
 between tests.
@@ -252,12 +281,12 @@ set "QA_TEST_DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/qa_t
 ```
 s2t-qa-agent/
 ├── backend/            Python API (FastAPI): Jira, requirements, profiling, mappings, transformation engine,
-│   │                   synthetic data, validation, execution, reports
-│   ├── app/            application code
+│   │                   test generation, validation, execution, reports
+│   ├── app/            application code (api/routers per area, services, templates for the report)
 │   ├── fixtures/jira/  sample Jira tickets used in mock mode (DATA-1234, SALES-77)
-│   ├── tests/          automated tests (pytest)
+│   ├── tests/          unit/ and integration/ tests (pytest)
 │   └── requirements.txt
-├── frontend/           React UI (Vite)
+├── frontend/           React UI (Vite); component tests next to the pages (*.test.jsx)
 ├── sample_data/        demo source and target files
 ├── docs/               ARCHITECTURE.md (design, safety model, status and gaps) and screenshots
 ├── .vscode/            ready-made VS Code tasks and run configurations

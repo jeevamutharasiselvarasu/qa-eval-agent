@@ -9,6 +9,7 @@ Workflow:
 * When there are no open items the SQL transformation is generated from the requirements automatically
   (``sync_sql``) and the test pack is built. Until then SQL generation is refused.
 """
+
 from __future__ import annotations
 
 import re
@@ -27,11 +28,21 @@ OPEN = ("OPEN", "BLOCKED")
 COLUMN_KINDS = ("DERIVED_COLUMN", "DIRECT_MAPPING", "MAPPING_SPEC")
 # a user-confirmed rule of the key kind supersedes every Jira rule of the kinds listed
 # (NO_JOIN / NO_FILTER / NO_DEFAULTS record an explicit "none" so the Jira rule of that kind stops applying)
-TABLE_SUPERSEDES = {"BUSINESS_KEY": ("BUSINESS_KEY", "UNIQUE_KEY"), "JOIN": ("JOIN",), "NO_JOIN": ("JOIN",),
-                    "FILTER": ("FILTER",), "NO_FILTER": ("FILTER",),
-                    "DEFAULT_WHEN_UNMATCHED": ("DEFAULT_WHEN_UNMATCHED",), "NO_DEFAULTS": ("DEFAULT_WHEN_UNMATCHED",)}
-EDIT_SECTIONS = {"BUSINESS_KEY": ("BUSINESS_KEY",), "JOIN": ("JOIN", "NO_JOIN"), "FILTER": ("FILTER", "NO_FILTER"),
-                 "DEFAULT_WHEN_UNMATCHED": ("DEFAULT_WHEN_UNMATCHED", "NO_DEFAULTS")}
+TABLE_SUPERSEDES = {
+    "BUSINESS_KEY": ("BUSINESS_KEY", "UNIQUE_KEY"),
+    "JOIN": ("JOIN",),
+    "NO_JOIN": ("JOIN",),
+    "FILTER": ("FILTER",),
+    "NO_FILTER": ("FILTER",),
+    "DEFAULT_WHEN_UNMATCHED": ("DEFAULT_WHEN_UNMATCHED",),
+    "NO_DEFAULTS": ("DEFAULT_WHEN_UNMATCHED",),
+}
+EDIT_SECTIONS = {
+    "BUSINESS_KEY": ("BUSINESS_KEY",),
+    "JOIN": ("JOIN", "NO_JOIN"),
+    "FILTER": ("FILTER", "NO_FILTER"),
+    "DEFAULT_WHEN_UNMATCHED": ("DEFAULT_WHEN_UNMATCHED", "NO_DEFAULTS"),
+}
 OPS = ("=", "!=", "<>", ">", ">=", "<", "<=")
 JOIN_TYPES = ("INNER", "LEFT", "RIGHT", "FULL")
 
@@ -76,7 +87,7 @@ def _strip_default(expr: str, default) -> str:
     """propose() wraps a column that has an 'unmatched default' as COALESCE(<rule>, <default>); show the rule itself."""
     suffix = f", {default!r})" if isinstance(default, str) else f", {default})"
     if default is not None and expr.startswith("COALESCE(") and expr.endswith(suffix):
-        return expr[len("COALESCE("):-len(suffix)]
+        return expr[len("COALESCE(") : -len(suffix)]
     return expr
 
 
@@ -108,8 +119,7 @@ def apply_overrides(db: Session, run_id: str, actor: str = "system") -> None:
     for r in reqs:
         if r.provenance in ("USER_CONFIRMED", "AI_INFERRED") or r.status not in ("ACCEPTED", "SUPERSEDED"):
             continue
-        hit = ((r.kind in COLUMN_KINDS and (r.spec.get("target") or "").upper() in user_targets)
-               or r.kind in superseded_kinds)
+        hit = (r.kind in COLUMN_KINDS and (r.spec.get("target") or "").upper() in user_targets) or r.kind in superseded_kinds
         r.status = "SUPERSEDED" if hit else "ACCEPTED"
     kinds = {r.kind for r in user}
     for g in db.scalars(select(RequirementGap).where(RequirementGap.run_id == run_id, RequirementGap.status == "OPEN")):
@@ -134,6 +144,7 @@ def refresh(db: Session, run: QARun, actor: str) -> None:
         mapping_svc.propose(db, run.id, actor)
         db.flush()
     from .runs import _gap_state
+
     _gap_state(db, run, actor)
 
 
@@ -186,83 +197,166 @@ def build_spec(db: Session, run: QARun) -> dict:
             state, msg = "QUESTION", f"{len(related)} open question(s) affect this column"
         else:
             state, msg = "CLEAR", ""
-        ai_notes = [r.description for r in reqs if r.provenance == "AI_INFERRED" and r.status == "PROPOSED"
-                    and (r.spec.get("target") or "").upper() == T]
-        jira_rule = next((r for r in reqs if r.status == "SUPERSEDED" and r.kind in COLUMN_KINDS
-                          and (r.spec.get("target") or "").upper() == T), None)
-        col = {"target": name, "type": typ, "in_target_file": bool(target and T in {c["name"].upper() for c in target.columns}),
-               "is_key": T in {k.upper() for k in key_cols}, "not_null": T in {c.upper() for c in not_null},
-               "source_columns": srcs, "rule": rule, "expression": expr, "mapping_type": m.mapping_type if m else "UNMAPPED_TARGET",
-               "summary": _summary(m.mapping_type, expr, srcs, group_by) if m and expr else "",
-               "group_by": group_by, "default_when_unmatched": defaults.get(T),
-               "origin": ("EDITED" if gov and gov.provenance == "USER_CONFIRMED" else
-                          "JIRA" if m and m.provenance in ("JIRA_EXPLICIT", "ATTACHMENT_DERIVED") else
-                          "SUGGESTED" if m and expr else "NONE"),
-               "evidence": (m.evidence if m else ""), "requirement_id": gov.id if gov else None,
-               "ac_id": gov.ac_id if gov else None, "jira_rule": jira_rule.description if jira_rule else None,
-               "state": state, "message": msg, "notes": [n for n in notes if n not in problem], "ai_notes": ai_notes,
-               "open_questions": [{"id": g.id, "description": g.description, "gap_type": g.gap_type} for g in related]}
+        ai_notes = [
+            r.description
+            for r in reqs
+            if r.provenance == "AI_INFERRED" and r.status == "PROPOSED" and (r.spec.get("target") or "").upper() == T
+        ]
+        jira_rule = next(
+            (r for r in reqs if r.status == "SUPERSEDED" and r.kind in COLUMN_KINDS and (r.spec.get("target") or "").upper() == T), None
+        )
+        col = {
+            "target": name,
+            "type": typ,
+            "in_target_file": bool(target and T in {c["name"].upper() for c in target.columns}),
+            "is_key": T in {k.upper() for k in key_cols},
+            "not_null": T in {c.upper() for c in not_null},
+            "source_columns": srcs,
+            "rule": rule,
+            "expression": expr,
+            "mapping_type": m.mapping_type if m else "UNMAPPED_TARGET",
+            "summary": _summary(m.mapping_type, expr, srcs, group_by) if m and expr else "",
+            "group_by": group_by,
+            "default_when_unmatched": defaults.get(T),
+            "origin": (
+                "EDITED"
+                if gov and gov.provenance == "USER_CONFIRMED"
+                else "JIRA"
+                if m and m.provenance in ("JIRA_EXPLICIT", "ATTACHMENT_DERIVED")
+                else "SUGGESTED"
+                if m and expr
+                else "NONE"
+            ),
+            "evidence": (m.evidence if m else ""),
+            "requirement_id": gov.id if gov else None,
+            "ac_id": gov.ac_id if gov else None,
+            "jira_rule": jira_rule.description if jira_rule else None,
+            "state": state,
+            "message": msg,
+            "notes": [n for n in notes if n not in problem],
+            "ai_notes": ai_notes,
+            "open_questions": [{"id": g.id, "description": g.description, "gap_type": g.gap_type} for g in related],
+        }
         columns.append(col)
         if state != "CLEAR":
             open_items.append({"kind": "COLUMN", "ref": name, "state": state, "message": msg, "action": "edit_column"})
 
     # table-level rules
-    joins = [{"id": m.id, "expression": m.expression, "status": m.status, "notes": m.notes,
-              "requirement_ids": m.requirement_ids} for m in maps if m.mapping_type == "JOINED"]
-    filters = [{"id": m.id, "expression": m.expression, "status": m.status, "notes": m.notes,
-                "requirement_ids": m.requirement_ids} for m in maps if m.mapping_type == "FILTERED"]
+    joins = [
+        {"id": m.id, "expression": m.expression, "status": m.status, "notes": m.notes, "requirement_ids": m.requirement_ids}
+        for m in maps
+        if m.mapping_type == "JOINED"
+    ]
+    filters = [
+        {"id": m.id, "expression": m.expression, "status": m.status, "notes": m.notes, "requirement_ids": m.requirement_ids}
+        for m in maps
+        if m.mapping_type == "FILTERED"
+    ]
 
     def raw(kind):
-        return [{"id": r.id, "spec": r.spec, "description": r.description, "provenance": r.provenance}
-                for r in accepted if r.kind == kind]
-    table = {"key": key_cols, "key_requirement": key_req.id if key_req else None,
-             "key_origin": ("EDITED" if key_req and key_req.provenance == "USER_CONFIRMED" else "JIRA" if key_req else None),
-             "not_null": not_null, "joins": joins, "filters": filters,
-             "defaults": {k: v for r in accepted if r.kind == "DEFAULT_WHEN_UNMATCHED" for k, v in r.spec.get("defaults", {}).items()},
-             "rounding": next((r.spec.get("mode") for r in accepted if r.kind == "ROUNDING_MODE"), None),
-             "join_specs": [r["spec"] for r in raw("JOIN")], "filter_specs": [r["spec"] for r in raw("FILTER")]}
+        return [{"id": r.id, "spec": r.spec, "description": r.description, "provenance": r.provenance} for r in accepted if r.kind == kind]
+
+    table = {
+        "key": key_cols,
+        "key_requirement": key_req.id if key_req else None,
+        "key_origin": ("EDITED" if key_req and key_req.provenance == "USER_CONFIRMED" else "JIRA" if key_req else None),
+        "not_null": not_null,
+        "joins": joins,
+        "filters": filters,
+        "defaults": {k: v for r in accepted if r.kind == "DEFAULT_WHEN_UNMATCHED" for k, v in r.spec.get("defaults", {}).items()},
+        "rounding": next((r.spec.get("mode") for r in accepted if r.kind == "ROUNDING_MODE"), None),
+        "join_specs": [r["spec"] for r in raw("JOIN")],
+        "filter_specs": [r["spec"] for r in raw("FILTER")],
+    }
     if not key_cols:
-        open_items.append({"kind": "TABLE", "ref": "Business key", "state": "MISSING",
-                           "message": "No business key: say which target column(s) identify a record", "action": "edit_table"})
+        open_items.append(
+            {
+                "kind": "TABLE",
+                "ref": "Business key",
+                "state": "MISSING",
+                "message": "No business key: say which target column(s) identify a record",
+                "action": "edit_table",
+            }
+        )
     used = {s.split(".")[0] for c in columns for s in c["source_columns"]}
     joined = {a for j in joins if j["status"] == "ACCEPTED" for a in re.findall(r"\b(\w+)\.\w+", j["expression"])}
     if len(used) > 1:
         missing = sorted(used - joined) if joined else sorted(used)
         if not joined or (missing and len(joined) < len(used)):
-            open_items.append({"kind": "TABLE", "ref": "Join", "state": "MISSING",
-                               "message": f"Columns come from {len(used)} sources ({', '.join(sorted(used))}) but no join "
-                                          f"connects {', '.join(missing) if joined else 'them'}", "action": "edit_table"})
+            open_items.append(
+                {
+                    "kind": "TABLE",
+                    "ref": "Join",
+                    "state": "MISSING",
+                    "message": f"Columns come from {len(used)} sources ({', '.join(sorted(used))}) but no join "
+                    f"connects {', '.join(missing) if joined else 'them'}",
+                    "action": "edit_table",
+                }
+            )
     for x in joins + filters:
         if x["status"] != "ACCEPTED":
-            open_items.append({"kind": "TABLE", "ref": x["expression"], "state": "INVALID",
-                               "message": x["notes"] or "Rule could not be matched to the uploaded sources", "action": "edit_table"})
+            open_items.append(
+                {
+                    "kind": "TABLE",
+                    "ref": x["expression"],
+                    "state": "INVALID",
+                    "message": x["notes"] or "Rule could not be matched to the uploaded sources",
+                    "action": "edit_table",
+                }
+            )
     for g in open_gaps:
         if g.id not in claimed:
-            open_items.append({"kind": "QUESTION", "ref": g.id, "state": "QUESTION", "message": g.description,
-                               "action": "answer_gap"})
+            open_items.append({"kind": "QUESTION", "ref": g.id, "state": "QUESTION", "message": g.description, "action": "answer_gap"})
     if not target:
-        open_items.insert(0, {"kind": "DATA", "ref": "Target file", "state": "MISSING", "message": "Upload the target file",
-                              "action": "data"})
+        open_items.insert(
+            0, {"kind": "DATA", "ref": "Target file", "state": "MISSING", "message": "Upload the target file", "action": "data"}
+        )
     if not sources:
-        open_items.insert(0, {"kind": "DATA", "ref": "Source files", "state": "MISSING", "message": "Upload at least one source file",
-                              "action": "data"})
+        open_items.insert(
+            0, {"kind": "DATA", "ref": "Source files", "state": "MISSING", "message": "Upload at least one source file", "action": "data"}
+        )
 
-    other_notes = [{"id": r.id, "description": r.description, "evidence": r.evidence} for r in reqs
-                   if r.provenance == "AI_INFERRED" and r.status == "PROPOSED" and not r.spec.get("target")]
+    other_notes = [
+        {"id": r.id, "description": r.description, "evidence": r.evidence}
+        for r in reqs
+        if r.provenance == "AI_INFERRED" and r.status == "PROPOSED" and not r.spec.get("target")
+    ]
     ready = not open_items
-    return {"ready": ready, "open_items": open_items, "columns": columns, "table": table,
-            "questions": [{"id": g.id, "gap_type": g.gap_type, "description": g.description, "detail": g.detail,
-                           "evidence": g.evidence, "status": g.status, "clarification": g.clarification,
-                           "columns": g.affected.get("columns", []), "updated_by": g.updated_by} for g in gaps],
-            "other_notes": other_notes, "sources": [{"alias": d.alias, "columns": [c["name"] for c in d.columns]} for d in sources],
-            "sql": sql_state(db, run, ready)}
+    return {
+        "ready": ready,
+        "open_items": open_items,
+        "columns": columns,
+        "table": table,
+        "questions": [
+            {
+                "id": g.id,
+                "gap_type": g.gap_type,
+                "description": g.description,
+                "detail": g.detail,
+                "evidence": g.evidence,
+                "status": g.status,
+                "clarification": g.clarification,
+                "columns": g.affected.get("columns", []),
+                "updated_by": g.updated_by,
+            }
+            for g in gaps
+        ],
+        "other_notes": other_notes,
+        "sources": [{"alias": d.alias, "columns": [c["name"] for c in d.columns]} for d in sources],
+        "sql": sql_state(db, run, ready),
+    }
 
 
 # ------------------------------------------------------------------ SQL generation
 def requirements_basis(db: Session, run_id: str) -> str:
-    maps = [[m.target_column, m.mapping_type, m.expression] for m in
-            db.scalars(select(ColumnMapping).where(ColumnMapping.run_id == run_id, ColumnMapping.status == "ACCEPTED",
-                                                   ColumnMapping.mapping_type != "UNMAPPED_SOURCE").order_by(ColumnMapping.id))]
+    maps = [
+        [m.target_column, m.mapping_type, m.expression]
+        for m in db.scalars(
+            select(ColumnMapping)
+            .where(ColumnMapping.run_id == run_id, ColumnMapping.status == "ACCEPTED", ColumnMapping.mapping_type != "UNMAPPED_SOURCE")
+            .order_by(ColumnMapping.id)
+        )
+    ]
     ds = sorted([d.alias, d.fingerprint] for d in _sources(db, run_id))
     return sha256_obj({"maps": maps, "sources": ds})
 
@@ -273,10 +367,10 @@ def sql_state(db: Session, run: QARun, ready: bool) -> dict:
         return {"state": "READY_TO_GENERATE" if ready else "WAITING_FOR_REQUIREMENTS", "version": None}
     outdated = v.requirements_basis != requirements_basis(db, run.id)
     generated = v.origin == "AI_GENERATED" and v.requirements_basis is not None
-    state = ("CURRENT" if not outdated else "WAITING_FOR_REQUIREMENTS" if not ready else
-             "WILL_REGENERATE" if generated else "MANUAL_OUTDATED")
-    return {"state": state, "version": v.version, "origin": v.origin, "generated_from_requirements": generated,
-            "outdated": outdated}
+    state = (
+        "CURRENT" if not outdated else "WAITING_FOR_REQUIREMENTS" if not ready else "WILL_REGENERATE" if generated else "MANUAL_OUTDATED"
+    )
+    return {"state": state, "version": v.version, "origin": v.origin, "generated_from_requirements": generated, "outdated": outdated}
 
 
 def sync_sql(db: Session, run: QARun, actor: str, force: bool = False) -> dict:
@@ -284,11 +378,13 @@ def sync_sql(db: Session, run: QARun, actor: str, force: bool = False) -> dict:
 
     A version that a person wrote or edited is never replaced automatically; ``force`` regenerates it on request."""
     from . import studio, testpack
+
     spec = build_spec(db, run)
     if not spec["ready"]:
         if force:
-            raise SpecError("The requirements are not complete yet: " +
-                            "; ".join(f"{i['ref']}: {i['message']}" for i in spec["open_items"][:6]))
+            raise SpecError(
+                "The requirements are not complete yet: " + "; ".join(f"{i['ref']}: {i['message']}" for i in spec["open_items"][:6])
+            )
         return {"generated": False, "ready": False, "open_items": spec["open_items"]}
     cur = approval_svc.current_version(db, run.id)
     basis = requirements_basis(db, run.id)
@@ -296,8 +392,12 @@ def sync_sql(db: Session, run: QARun, actor: str, force: bool = False) -> dict:
         if cur.requirements_basis == basis:
             return {"generated": False, "ready": True, "version": cur.version, "reason": "SQL is already up to date"}
         if not (cur.origin == "AI_GENERATED" and cur.requirements_basis is not None):
-            return {"generated": False, "ready": True, "version": cur.version,
-                    "reason": "The current SQL was written or edited by a person; regenerate it on the Transformation tab"}
+            return {
+                "generated": False,
+                "ready": True,
+                "version": cur.version,
+                "reason": "The current SQL was written or edited by a person; regenerate it on the Transformation tab",
+            }
     v = studio.ai_generate(db, run, "SQL", "", actor)
     v.requirements_basis = basis
     if not v.comment.startswith("Generated from the requirements"):
@@ -323,8 +423,9 @@ def _resolve_gaps(db: Session, run_id: str, resolve: dict[str, dict], actor: str
         st = d.get("status", "CLARIFIED")
         if st not in ("OPEN", "CLARIFIED", "ACCEPTED_LIMITATION"):
             raise SpecError(f"Invalid status for {gid}")
-        note = (d.get("note") or "").strip() or (default_note if st == "CLARIFIED" else
-                                                   f"Accepted as a known limitation by {actor}" if st == "ACCEPTED_LIMITATION" else "")
+        note = (d.get("note") or "").strip() or (
+            default_note if st == "CLARIFIED" else f"Accepted as a known limitation by {actor}" if st == "ACCEPTED_LIMITATION" else ""
+        )
         g.status, g.clarification, g.updated_by = st, (note or None), actor
         audit(db, actor, "GAP_UPDATED", run_id, "REQUIREMENT_GAP", gid, status=st, clarification=note)
         done.append(gid)
@@ -341,7 +442,9 @@ def _check_expression(expr: str, ctx: mapping_svc.Ctx) -> tuple[str, list[str], 
         tree = sqlglot.parse_one(expr, read="duckdb")
     except Exception as e:  # noqa: BLE001
         raise SpecError(f"The rule is not a valid SQL expression: {str(e).splitlines()[0][:200]}") from e
-    if isinstance(tree, (sqlglot.exp.Query, sqlglot.exp.DDL, sqlglot.exp.DML)) or list(tree.find_all(sqlglot.exp.Subquery, sqlglot.exp.Select)):
+    if isinstance(tree, (sqlglot.exp.Query, sqlglot.exp.DDL, sqlglot.exp.DML)) or list(
+        tree.find_all(sqlglot.exp.Subquery, sqlglot.exp.Select)
+    ):
         raise SpecError("Write a single expression (for example UPPER(TRIM(customers.NAME))), not a query")
     q, srcs, notes = mapping_svc.qualify_expression(expr, ctx, None)
     bad = [n for n in notes if "not found" in n or "multiple sources" in n or "does not parse" in n]
@@ -352,31 +455,30 @@ def _check_expression(expr: str, ctx: mapping_svc.Ctx) -> tuple[str, list[str], 
     return q, srcs, agg, int(p.group(1)) if p else None
 
 
-def edit_column(db: Session, run: QARun, target: str, expression: str, actor: str,
-                resolve: dict[str, dict] | None = None, note: str = "") -> dict:
+def edit_column(
+    db: Session, run: QARun, target: str, expression: str, actor: str, resolve: dict[str, dict] | None = None, note: str = ""
+) -> dict:
     ctx = mapping_svc.Ctx(db, run.id)
     if not ctx.sources:
         raise SpecError("Upload the source files first")
     tnames = [c["name"] for c in (ctx.target.columns if ctx.target else [])]
     reqs = _reqs(db, run.id)
-    known = {t.upper(): t for t in tnames} | {(r.spec.get("target") or "").upper(): r.spec["target"]
-                                              for r in reqs if r.spec.get("target")}
+    known = {t.upper(): t for t in tnames} | {(r.spec.get("target") or "").upper(): r.spec["target"] for r in reqs if r.spec.get("target")}
     if target.upper() not in known:
         raise SpecError(f"{target} is not a target column")
     target = known[target.upper()]
     q, srcs, agg, precision = _check_expression(expression, ctx)
     T = target.upper()
-    previous = [r for r in reqs if r.kind in COLUMN_KINDS and (r.spec.get("target") or "").upper() == T
-                and r.provenance != "AI_INFERRED"]
+    previous = [r for r in reqs if r.kind in COLUMN_KINDS and (r.spec.get("target") or "").upper() == T and r.provenance != "AI_INFERRED"]
     orig = next((r for r in previous if r.provenance != "USER_CONFIRMED"), None)
     group_by = []
     if agg:
         group_by = next((r.spec.get("group_by") for r in previous if r.spec.get("group_by")), None) or []
         if not group_by:
-            group_by = next((r.spec.get("columns") for r in reqs if r.kind in ("BUSINESS_KEY", "UNIQUE_KEY")
-                             and r.status == "ACCEPTED"), []) or []
-    spec = {"target": target, "expression": q, "columns": columns_in(q), "aggregate": agg, "parsed": True,
-            "source_columns": srcs}
+            group_by = (
+                next((r.spec.get("columns") for r in reqs if r.kind in ("BUSINESS_KEY", "UNIQUE_KEY") and r.status == "ACCEPTED"), []) or []
+            )
+    spec = {"target": target, "expression": q, "columns": columns_in(q), "aggregate": agg, "parsed": True, "source_columns": srcs}
     if group_by:
         spec["group_by"] = group_by
     if precision is not None:
@@ -390,14 +492,35 @@ def edit_column(db: Session, run: QARun, target: str, expression: str, actor: st
         rid = user.id
     else:
         rid = _next_req_id(db, run.id)
-        db.add(Requirement(id=rid, run_id=run.id, ac_id=orig.ac_id if orig else None, kind="DERIVED_COLUMN", description=desc,
-                           spec=spec, provenance="USER_CONFIRMED", confidence="HIGH", source_ref="user:requirements-tab",
-                           evidence=f"Edited on the Requirements tab by {actor}" + (f": {note}" if note else ""),
-                           status="ACCEPTED"))
+        db.add(
+            Requirement(
+                id=rid,
+                run_id=run.id,
+                ac_id=orig.ac_id if orig else None,
+                kind="DERIVED_COLUMN",
+                description=desc,
+                spec=spec,
+                provenance="USER_CONFIRMED",
+                confidence="HIGH",
+                source_ref="user:requirements-tab",
+                evidence=f"Edited on the Requirements tab by {actor}" + (f": {note}" if note else ""),
+                status="ACCEPTED",
+            )
+        )
     db.flush()
     resolved = _resolve_gaps(db, run.id, resolve or {}, actor, f"Handled by the rule for {target}: {q} (set by {actor})")
-    audit(db, actor, "TARGET_RULE_EDITED", run.id, "REQUIREMENT", rid, target=target, expression=q,
-          replaces=[r.id for r in previous], resolved=resolved)
+    audit(
+        db,
+        actor,
+        "TARGET_RULE_EDITED",
+        run.id,
+        "REQUIREMENT",
+        rid,
+        target=target,
+        expression=q,
+        replaces=[r.id for r in previous],
+        resolved=resolved,
+    )
     refresh(db, run, actor)
     return sync_sql(db, run, actor)
 
@@ -421,8 +544,14 @@ def edit_table(db: Session, run: QARun, body: dict, actor: str) -> dict:
             raise SpecError(f"Not target columns: {', '.join(bad)}")
         key = [tnames.get(k.upper(), k) for k in key]
         replace.add("BUSINESS_KEY")
-        new.append(("BUSINESS_KEY", f"{' + '.join(key)} {'is' if len(key) == 1 else 'form'} the business key",
-                    {"columns": key}, ac_of(("BUSINESS_KEY", "UNIQUE_KEY"))))
+        new.append(
+            (
+                "BUSINESS_KEY",
+                f"{' + '.join(key)} {'is' if len(key) == 1 else 'form'} the business key",
+                {"columns": key},
+                ac_of(("BUSINESS_KEY", "UNIQUE_KEY")),
+            )
+        )
         have_nn = {c.upper() for r in reqs if r.kind == "NOT_NULL" and r.status == "ACCEPTED" for c in r.spec.get("columns", [])}
         for k in key:
             if k.upper() not in have_nn:
@@ -431,19 +560,25 @@ def edit_table(db: Session, run: QARun, body: dict, actor: str) -> dict:
         replace.add("JOIN")
         for j in body["joins"]:
             jt = (j.get("type") or "").upper()
-            l, r_, keys = j.get("left"), j.get("right"), [k.strip() for k in j.get("keys", []) if k.strip()]
+            left, r_, keys = j.get("left"), j.get("right"), [k.strip() for k in j.get("keys", []) if k.strip()]
             if jt not in JOIN_TYPES:
                 raise SpecError(f"Join type must be one of {', '.join(JOIN_TYPES)}")
-            if l not in ctx.cols or r_ not in ctx.cols or l == r_:
+            if left not in ctx.cols or r_ not in ctx.cols or left == r_:
                 raise SpecError("Choose two different source files for the join")
             if not keys:
                 raise SpecError("Choose the join key column(s)")
             for k in keys:
-                for a in (l, r_):
+                for a in (left, r_):
                     if k.upper() not in {c.upper() for c in ctx.cols[a]}:
                         raise SpecError(f"Join key {k} is not a column of {a}")
-            new.append(("JOIN", f"{jt} JOIN {l} to {r_} on {', '.join(keys)}",
-                        {"type": jt, "left": l, "right": r_, "keys": keys}, ac_of(("JOIN",))))
+            new.append(
+                (
+                    "JOIN",
+                    f"{jt} JOIN {left} to {r_} on {', '.join(keys)}",
+                    {"type": jt, "left": left, "right": r_, "keys": keys},
+                    ac_of(("JOIN",)),
+                )
+            )
     if body.get("filters") is not None:
         replace.add("FILTER")
         for f in body["filters"]:
@@ -455,8 +590,14 @@ def edit_table(db: Session, run: QARun, body: dict, actor: str) -> dict:
             if val is None or str(val).strip() == "":
                 raise SpecError("Enter the filter value")
             col = ctx.real(a, col)
-            new.append(("FILTER", f"Only {a} with {col} {op} {_lit(val)} are included",
-                        {"dataset_hint": a, "column": col, "op": op, "value": str(val)}, ac_of(("FILTER",))))
+            new.append(
+                (
+                    "FILTER",
+                    f"Only {a} with {col} {op} {_lit(val)} are included",
+                    {"dataset_hint": a, "column": col, "op": op, "value": str(val)},
+                    ac_of(("FILTER",)),
+                )
+            )
     if body.get("defaults") is not None:
         replace.add("DEFAULT_WHEN_UNMATCHED")
         d = {}
@@ -468,8 +609,14 @@ def edit_table(db: Session, run: QARun, body: dict, actor: str) -> dict:
             v = str(v).strip()
             d[tnames.get(k.upper(), k)] = (float(v) if "." in v else int(v)) if re.fullmatch(r"-?\d+(\.\d+)?", v) else v.strip("'")
         if d:
-            new.append(("DEFAULT_WHEN_UNMATCHED", "Defaults for records without matches: " +
-                        ", ".join(f"{k} = {_lit(v)}" for k, v in d.items()), {"defaults": d}, ac_of(("DEFAULT_WHEN_UNMATCHED",))))
+            new.append(
+                (
+                    "DEFAULT_WHEN_UNMATCHED",
+                    "Defaults for records without matches: " + ", ".join(f"{k} = {_lit(v)}" for k, v in d.items()),
+                    {"defaults": d},
+                    ac_of(("DEFAULT_WHEN_UNMATCHED",)),
+                )
+            )
         else:
             new.append(("NO_DEFAULTS", "No defaults for records without matches", {}, None))
     if body.get("filters") is not None and not body["filters"]:
@@ -484,9 +631,21 @@ def edit_table(db: Session, run: QARun, body: dict, actor: str) -> dict:
     ids = []
     for kind, desc, spec, ac in new:
         rid = _next_req_id(db, run.id)
-        db.add(Requirement(id=rid, run_id=run.id, ac_id=ac, kind=kind, description=desc, spec=spec,
-                           provenance="USER_CONFIRMED", confidence="HIGH", source_ref="user:requirements-tab",
-                           evidence=f"Edited on the Requirements tab by {actor}", status="ACCEPTED"))
+        db.add(
+            Requirement(
+                id=rid,
+                run_id=run.id,
+                ac_id=ac,
+                kind=kind,
+                description=desc,
+                spec=spec,
+                provenance="USER_CONFIRMED",
+                confidence="HIGH",
+                source_ref="user:requirements-tab",
+                evidence=f"Edited on the Requirements tab by {actor}",
+                status="ACCEPTED",
+            )
+        )
         db.flush()
         ids.append(rid)
     resolved = _resolve_gaps(db, run.id, body.get("resolve") or {}, actor, f"Handled by the table rules set by {actor}")

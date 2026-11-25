@@ -1,4 +1,5 @@
 """Deterministic validation engine checks on small hand-built tables."""
+
 import datetime as dt
 
 import pyarrow as pa
@@ -22,6 +23,7 @@ def mk(tmp_path):
         a = write(tmp_path, "a", actual, schema)
         srcs = {k: write(tmp_path, "s_" + k, v) for k, v in (sources or {}).items()}
         return ValidationContext(e, a, srcs)
+
     return _mk
 
 
@@ -31,7 +33,12 @@ E = [{"ID": "1", "AMT": 10.0, "NAME": "A"}, {"ID": "2", "AMT": 20.0, "NAME": "B"
 def test_schema_mismatch(mk):
     ctx = mk(E, [{"ID": "1", "AMT": "x", "EXTRA": 1}])
     r = run_check(ctx, {"type": "SCHEMA_MATCH"})
-    assert r.status == "FAIL" and r.metrics["missing"] == ["NAME"] and r.metrics["unexpected"] == ["EXTRA"] and r.metrics["type_mismatches"] == 1
+    assert (
+        r.status == "FAIL"
+        and r.metrics["missing"] == ["NAME"]
+        and r.metrics["unexpected"] == ["EXTRA"]
+        and r.metrics["type_mismatches"] == 1
+    )
 
 
 def test_count_mismatch_and_match(mk):
@@ -110,21 +117,26 @@ def test_join_coverage_defaults_and_filter_boundary(mk):
     ctx = mk(tgt, tgt, {"base": base, "right": right})
     cov = run_check(ctx, {"type": "KEY_COVERAGE", "base": "base", "base_key": "CID", "key": "CID"})
     assert cov.status == "FAIL" and cov.evidence_rows == [{"CID": "c3"}]
-    d = run_check(ctx, {"type": "UNMATCHED_DEFAULTS", "base": "base", "right": "right", "join_keys": ["CID"],
-                        "right_filter": {"column": "ST", "op": "=", "value": "OK"}, "key": "CID", "defaults": {"N": 0}})
+    d = run_check(
+        ctx,
+        {
+            "type": "UNMATCHED_DEFAULTS",
+            "base": "base",
+            "right": "right",
+            "join_keys": ["CID"],
+            "right_filter": {"column": "ST", "op": "=", "value": "OK"},
+            "key": "CID",
+            "defaults": {"N": 0},
+        },
+    )
     assert d.status == "FAIL" and d.metrics["unmatched_keys"] == 2 and d.metrics["violations"] == 1  # c2 filtered out but N=5
 
 
-def test_aggregation_mismatch_and_join_duplication_via_snapshot(mk):
+def test_aggregation_doubled_by_a_fan_out_join_is_a_column_mismatch(mk):
     e = [{"ID": "1", "TOTAL": 30.0}, {"ID": "2", "TOTAL": 5.0}]
     a = [{"ID": "1", "TOTAL": 60.0}, {"ID": "2", "TOTAL": 5.0}]  # doubled by a fan-out join
-    r = run_check(mk(e, a), {"type": "SNAPSHOT_MATCH", "keys": ["ID"]})
-    assert r.status == "FAIL" and r.metrics["changed_values"] == 1
-
-
-def test_rule_predicate(mk):
-    r = run_check(mk(E, E), {"type": "RULE_PREDICATE", "condition": {"column": "AMT", "op": ">=", "value": 0}})
-    assert r.status == "FAIL" and r.metrics["violations"] == 1  # NULL AMT violates (unknown is not satisfied)
+    r = run_check(mk(e, a), {"type": "COLUMN_MATCH", "column": "TOTAL", "keys": ["ID"]})
+    assert r.status == "FAIL" and r.metrics["mismatches"] == 1
 
 
 def test_runtime_guards(mk):

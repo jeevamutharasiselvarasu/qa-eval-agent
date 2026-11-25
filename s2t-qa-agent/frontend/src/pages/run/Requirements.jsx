@@ -1,9 +1,10 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { RefreshCw, Pencil, Check, MessageSquareText, Paperclip, ShieldAlert, KeyRound, Link2, Filter, CircleSlash, CheckCircle2, AlertTriangle, Sparkles, Plus, Trash2 } from 'lucide-react'
 import { api } from '../../api.js'
 import { useRun } from '../RunWorkspace.jsx'
-import { Alert, Badge, Btn, Card, Empty, Modal, useAction, useLoad } from '../../components/ui.jsx'
+import StepNav from './StepNav.jsx'
+import { Alert, Badge, Btn, Card, Empty, Loading, Modal, useAction, useLoad } from '../../components/ui.jsx'
 
 const STATE_LABEL = { CLEAR: 'Clear', MISSING: 'Missing', SUGGESTED: 'Confirm', QUESTION: 'Question', INVALID: 'Fix rule' }
 const ORIGIN_LABEL = { JIRA: 'Jira', EDITED: 'Edited', SUGGESTED: 'Suggested', NONE: '—' }
@@ -194,7 +195,8 @@ export default function Requirements() {
 
   return (
     <div className="col">
-      {specErr ? <Alert kind="err">{specErr}</Alert> : !spec ? <Empty>Loading…</Empty> : <>
+      <StepNav step="requirements" />
+      {specErr ? <Alert kind="err">{specErr}</Alert> : !spec ? <Loading /> : <>
         {/* readiness */}
         {spec.ready ? (
           <Card>
@@ -202,7 +204,7 @@ export default function Requirements() {
               <CheckCircle2 size={20} color="#1f9d55" />
               <div className="grow">
                 <b>All requirements are clear.</b>{' '}
-                {spec.sql.state === 'CURRENT' && <>SQL v{spec.sql.version} was generated from them. <Link to={`/runs/${runId}/studio`}>Review the SQL</Link> · <Link to={`/runs/${runId}/tests`}>Test cases</Link></>}
+                {spec.sql.state === 'CURRENT' && <>SQL v{spec.sql.version} was generated from them. Continue with <b>Next: SQL</b> to review and approve it.</>}
                 {spec.sql.state === 'READY_TO_GENERATE' && <>The SQL has not been generated yet.</>}
                 {spec.sql.state === 'MANUAL_OUTDATED' && <>The SQL (v{spec.sql.version}) was edited by hand and the requirements changed since, so it was not replaced automatically.</>}
                 {spec.sql.state === 'WILL_REGENERATE' && <>The SQL will be regenerated.</>}

@@ -1,0 +1,25 @@
+[tool.ruff]
+line-length = 140
+target-version = "py311"
+extend-exclude = ["var", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP"]
+# B008: FastAPI's Depends()/File()/Query() in argument defaults is the framework's intended style
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "B017"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/services/transform/python_worker.py"]
+
+[tool.coverage.report]
+show_missing = false
+skip_covered = false

@@ -2,13 +2,15 @@
 
 Never imported by the API process. Writes a JSON result file; user output goes to the job's parquet path.
 """
+
 import builtins
 import json
 import sys
-import traceback
 
 # site-packages are needed for pandas/pyarrow even with -S
 import sysconfig
+import traceback
+
 for _p in (sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]):
     if _p not in sys.path:
         sys.path.append(_p)
@@ -18,14 +20,65 @@ import pandas as pd  # noqa: E402
 import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 
-ALLOWED_IMPORTS = {"pandas", "numpy", "math", "datetime", "decimal", "re", "statistics", "collections",
-                   "itertools", "functools"}
-SAFE_BUILTINS = ["abs", "all", "any", "bool", "dict", "enumerate", "filter", "float", "frozenset", "int", "isinstance",
-                 "len", "list", "map", "max", "min", "print", "range", "repr", "reversed", "round", "set", "slice",
-                 "sorted", "str", "sum", "tuple", "zip", "Exception", "ValueError", "KeyError", "TypeError",
-                 "ZeroDivisionError", "IndexError", "None", "True", "False", "divmod", "pow", "hash", "format",
-                 "issubclass", "type", "callable", "chr", "ord", "hex", "bin", "oct", "NotImplementedError",
-                 "ArithmeticError", "AssertionError", "RuntimeError", "StopIteration", "iter", "next"]
+ALLOWED_IMPORTS = {"pandas", "numpy", "math", "datetime", "decimal", "re", "statistics", "collections", "itertools", "functools"}
+SAFE_BUILTINS = [
+    "abs",
+    "all",
+    "any",
+    "bool",
+    "dict",
+    "enumerate",
+    "filter",
+    "float",
+    "frozenset",
+    "int",
+    "isinstance",
+    "len",
+    "list",
+    "map",
+    "max",
+    "min",
+    "print",
+    "range",
+    "repr",
+    "reversed",
+    "round",
+    "set",
+    "slice",
+    "sorted",
+    "str",
+    "sum",
+    "tuple",
+    "zip",
+    "Exception",
+    "ValueError",
+    "KeyError",
+    "TypeError",
+    "ZeroDivisionError",
+    "IndexError",
+    "None",
+    "True",
+    "False",
+    "divmod",
+    "pow",
+    "hash",
+    "format",
+    "issubclass",
+    "type",
+    "callable",
+    "chr",
+    "ord",
+    "hex",
+    "bin",
+    "oct",
+    "NotImplementedError",
+    "ArithmeticError",
+    "AssertionError",
+    "RuntimeError",
+    "StopIteration",
+    "iter",
+    "next",
+]
 
 
 def main(job_path: str) -> None:
@@ -43,6 +96,7 @@ def main(job_path: str) -> None:
     for alias, path in job["inputs"].items():
         sources[alias] = pq.read_table(path).to_pandas()
     import os
+
     norm = lambda p: os.path.normcase(os.path.abspath(p))  # noqa: E731 - case/separator-insensitive on Windows
     lib_roots = tuple(norm(p).rstrip(os.sep) + os.sep for p in sys.path if p and os.path.isabs(p))
     phase = ["user"]
@@ -54,11 +108,40 @@ def main(job_path: str) -> None:
             path, mode = str(args[0]), str(args[1] or "r")
             if any(c in mode for c in "wax+") or not norm(path).startswith(lib_roots):
                 raise PermissionError(f"File access is not permitted in transformations: {path}")
-        elif event.startswith(("socket.", "subprocess.", "os.system", "os.exec", "os.spawn", "os.fork", "os.posix_spawn",
-                               "os.kill", "os.remove", "os.rename", "os.mkdir", "os.rmdir", "shutil.", "ctypes.",
-                               "os.chmod", "os.chown", "os.link", "os.symlink", "os.truncate", "urllib.", "http.",
-                               "ftplib.", "smtplib.", "webbrowser.", "pty.", "sys._getframe", "code.", "compile",
-                               "exec", "pickle.")):
+        elif event.startswith(
+            (
+                "socket.",
+                "subprocess.",
+                "os.system",
+                "os.exec",
+                "os.spawn",
+                "os.fork",
+                "os.posix_spawn",
+                "os.kill",
+                "os.remove",
+                "os.rename",
+                "os.mkdir",
+                "os.rmdir",
+                "shutil.",
+                "ctypes.",
+                "os.chmod",
+                "os.chown",
+                "os.link",
+                "os.symlink",
+                "os.truncate",
+                "urllib.",
+                "http.",
+                "ftplib.",
+                "smtplib.",
+                "webbrowser.",
+                "pty.",
+                "sys._getframe",
+                "code.",
+                "compile",
+                "exec",
+                "pickle.",
+            )
+        ):
             if event in ("exec", "compile"):
                 return  # library-internal compile during lazy imports; user code cannot reach exec/compile (AST policy)
             raise PermissionError(f"Operation '{event}' is not permitted in transformations")
@@ -96,8 +179,12 @@ def main(job_path: str) -> None:
     if isinstance(out, pd.Series):
         out = out.to_frame()
     if not isinstance(out, pd.DataFrame):
-        write_result({"error": {"message": f"transform() must return a pandas DataFrame, got {type(out).__name__}",
-                                "kind": "CONTRACT"}, "logs": logs})
+        write_result(
+            {
+                "error": {"message": f"transform() must return a pandas DataFrame, got {type(out).__name__}", "kind": "CONTRACT"},
+                "logs": logs,
+            }
+        )
         return
     cols = [str(c) for c in out.columns]
     if len(set(c.lower() for c in cols)) != len(cols):
@@ -118,8 +205,14 @@ def main(job_path: str) -> None:
         out = out.head(int(job["limit"]))
     table = pa.Table.from_pandas(out, preserve_index=False)
     pq.write_table(table, job["output"])
-    write_result({"row_count": table.num_rows, "schema": [{"name": f.name, "type": str(f.type)} for f in table.schema],
-                  "logs": logs, "warnings": warnings})
+    write_result(
+        {
+            "row_count": table.num_rows,
+            "schema": [{"name": f.name, "type": str(f.type)} for f in table.schema],
+            "logs": logs,
+            "warnings": warnings,
+        }
+    )
 
 
 if __name__ == "__main__":

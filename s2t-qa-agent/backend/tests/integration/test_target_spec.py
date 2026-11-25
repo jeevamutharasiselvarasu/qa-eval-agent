@@ -1,4 +1,5 @@
 """Requirements per target column: open items gate the SQL; in-app edits generate it and survive Jira re-retrieval."""
+
 from conftest import SAMPLES
 
 
@@ -45,9 +46,10 @@ def test_editing_the_rule_resolves_the_question_and_generates_sql(client):
     assert bad.status_code == 400 and "not found" in bad.json()["detail"]
     sub = client.put(f"/api/runs/{rid}/target-spec/columns/NET_AMOUNT", json={"expression": "(SELECT 1)"})
     assert sub.status_code == 400
-    r = client.put(f"/api/runs/{rid}/target-spec/columns/NET_AMOUNT", json={
-        "expression": "ROUND(SUM(AMOUNT - COALESCE(DISCOUNT, 0)), 2)",
-        "resolve": {qs["null"]: {"status": "CLARIFIED"}}})
+    r = client.put(
+        f"/api/runs/{rid}/target-spec/columns/NET_AMOUNT",
+        json={"expression": "ROUND(SUM(AMOUNT - COALESCE(DISCOUNT, 0)), 2)", "resolve": {qs["null"]: {"status": "CLARIFIED"}}},
+    )
     assert r.status_code == 200, r.text
     spec = r.json()["spec"]
     net = _col(spec, "NET_AMOUNT")
@@ -90,10 +92,15 @@ def test_table_rules_edit_and_hand_written_sql_is_not_overwritten(client):
     for q in client.get(f"/api/runs/{rid}/target-spec").json()["questions"]:
         if q["status"] == "OPEN":
             client.post(f"/api/runs/{rid}/target-spec/questions/{q['id']}", json={"status": "CLARIFIED", "note": "ok"})
-    bad = client.put(f"/api/runs/{rid}/target-spec/table-rules", json={"joins": [{"type": "LEFT", "left": "customers", "right": "transactions", "keys": ["NOPE"]}]})
+    bad = client.put(
+        f"/api/runs/{rid}/target-spec/table-rules",
+        json={"joins": [{"type": "LEFT", "left": "customers", "right": "transactions", "keys": ["NOPE"]}]},
+    )
     assert bad.status_code == 400
-    r = client.put(f"/api/runs/{rid}/target-spec/table-rules", json={
-        "filters": [{"dataset": "transactions", "column": "status", "op": "!=", "value": "CANCELLED"}]})
+    r = client.put(
+        f"/api/runs/{rid}/target-spec/table-rules",
+        json={"filters": [{"dataset": "transactions", "column": "status", "op": "!=", "value": "CANCELLED"}]},
+    )
     assert r.status_code == 200, r.text
     spec = r.json()["spec"]
     assert [f["expression"] for f in spec["table"]["filters"]] == ["transactions.STATUS != 'CANCELLED'"]

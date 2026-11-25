@@ -1,8 +1,8 @@
-import React, { useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Upload, X, Play, CheckCircle2, Circle, Loader2, Search } from 'lucide-react'
 import { api } from '../api.js'
-import { Alert, Badge, Btn, Card, useToast } from '../components/ui.jsx'
+import { Alert, Badge, Btn, Card, PageHeader, useToast } from '../components/ui.jsx'
 
 function Drop({ multiple, onFiles, label }) {
   const ref = useRef()
@@ -28,7 +28,7 @@ export default function NewRun({ meta }) {
   const [name, setName] = useState('')
   const [sources, setSources] = useState([])
   const [target, setTarget] = useState(null)
-  const [settings, setSettings] = useState({ synthetic_records_per_scenario: 12, synthetic_seed: 20261103, default_numeric_tolerance: 0, trim: false, ci: false })
+  const [settings, setSettings] = useState({ default_numeric_tolerance: 0, trim: false, ci: false })
   const [steps, setSteps] = useState([])
   const [err, setErr] = useState(null)
   const [ticket, setTicket] = useState(null)
@@ -50,7 +50,6 @@ export default function NewRun({ meta }) {
     try {
       mark(i, 'run')
       const run = await api.post('/runs', { jira_key: key.trim(), name, settings: {
-        synthetic_records_per_scenario: Number(settings.synthetic_records_per_scenario), synthetic_seed: Number(settings.synthetic_seed),
         default_numeric_tolerance: Number(settings.default_numeric_tolerance), string_compare: { trim: settings.trim, case_insensitive: settings.ci } } })
       runId = run.id
       mark(i++, 'done', run.id)
@@ -80,8 +79,8 @@ export default function NewRun({ meta }) {
       }
       const pk = await api.get(`/runs/${runId}/test-pack`)
       mark(i++, 'done', `SQL v${sync.version ?? ''} · ${pk.test_cases} test cases (${pk.by_type.POSITIVE} positive, ${pk.by_type.NEGATIVE} negative, ${pk.by_type.EDGE} edge)`)
-      toast('QA run ready for review')
-      nav(`/runs/${runId}/overview`)
+      toast('Requirements are complete and the SQL is ready: check them, then continue to step 2')
+      nav(`/runs/${runId}/requirements`)
     } catch (e) {
       mark(i, 'err', e.message)
       setErr({ msg: e.message, runId })
@@ -90,7 +89,7 @@ export default function NewRun({ meta }) {
 
   return (
     <div>
-      <div className="page-head"><div><h1>New QA run</h1><p>Enter a Jira ticket, upload one or more source datasets and exactly one existing target dataset.</p></div></div>
+      <PageHeader title="New QA run" description="Enter a Jira ticket, add one or more source files and the target file to validate." />
       <div className="grid g2" style={{ gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,1fr)' }}>
         <div className="col">
           <Card title="1 · Jira ticket" actions={meta && <Badge s={meta.jira_mode === 'mock' ? 'MOCK' : 'APPROVED'} title={meta.jira_site}>{meta.jira_mode === 'mock' ? 'Sample tickets' : 'Jira Cloud connected'}</Badge>}>
@@ -134,8 +133,6 @@ export default function NewRun({ meta }) {
         <div className="col">
           <Card title="Execution settings">
             <div className="grid g2">
-              <label className="field">Synthetic records / scenario<input type="number" min="3" max="500" value={settings.synthetic_records_per_scenario} onChange={e => setSettings({ ...settings, synthetic_records_per_scenario: e.target.value })} /></label>
-              <label className="field">Random seed<input type="number" value={settings.synthetic_seed} onChange={e => setSettings({ ...settings, synthetic_seed: e.target.value })} /></label>
               <label className="field">Default numeric tolerance<input type="number" step="0.0001" min="0" value={settings.default_numeric_tolerance} onChange={e => setSettings({ ...settings, default_numeric_tolerance: e.target.value })} /></label>
             </div>
             <div className="row mt gap-l small">
